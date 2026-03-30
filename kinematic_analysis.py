@@ -191,7 +191,7 @@ if uploaded_file:
         edited_groups = st.data_editor(
             st.session_state.group_definitions,
             num_rows="dynamic",
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
             key="groups_editor"
         )
