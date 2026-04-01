@@ -131,7 +131,8 @@ uploaded_file = st.file_uploader("Upload your cleaned Descriptive Statistics Exc
 
 if uploaded_file:
     if 'data_dict' not in st.session_state or st.session_state.get('uploaded_filename') != uploaded_file.name:
-        xls = pd.ExcelFile(uploaded_file)
+        # NEW: Added engine='calamine' for faster reading
+        xls = pd.ExcelFile(uploaded_file, engine='calamine')
         sheet_names = xls.sheet_names
         st.session_state.data_dict = {
             sheet: pd.read_excel(xls, sheet_name=sheet).rename(columns=column_rename_map) 
