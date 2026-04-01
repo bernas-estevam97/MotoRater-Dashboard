@@ -2,7 +2,7 @@ import streamlit as st
 from datetime import datetime
 
 # 1. Set the configuration for the ENTIRE app here
-st.set_page_config(page_title="MotoRater Suite", page_icon="🏍️", layout="wide")
+st.set_page_config(page_title="MotoRater Suite", page_icon="📑", layout="wide")
 
 # 2. Define your pages
 # The file paths should point exactly to your script names
@@ -11,6 +11,18 @@ intro_page = st.Page(
     title="Welcome", 
     icon="🏠", 
     default=True  # This is now your launch homepage
+)
+
+tutorial_page_time = st.Page(
+    page="tutorial_time_series.py",
+    title="Tutorial - Time Series",
+    icon="❓",
+)
+
+tutorial_page_kine = st.Page(
+    page="tutorial_kinematics.py",
+    title="Tutorial - Kinematics Longitudinal Analyzer",
+    icon="❓",
 )
 
 all_measurements_page = st.Page(
@@ -40,7 +52,7 @@ converter_page = st.Page(
 # 3. Create the navigation menu
 # Using a dictionary allows you to group pages under a nice header in the sidebar
 pg = st.navigation(
-    {"Home": [intro_page],
+    {"Home": [intro_page, tutorial_page_time, tutorial_page_kine],
      "MotoRater Tools": [all_measurements_page, all_measurements_parquet, kinematics_analysis_page, converter_page]}
 )
 

@@ -1,7 +1,7 @@
 import streamlit as st
 
 # --- Landing Page Content ---
-st.title("🏍️ Welcome to the MotoRater Suite")
+st.title("📑 Welcome to the MotoRater Suite")
 st.markdown("---")
 
 st.markdown("""
