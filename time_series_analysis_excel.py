@@ -63,7 +63,7 @@ def load_excel_data(file_path, sheet_name, file_name):
         df = pd.read_excel(file_path, sheet_name=sheet_name, engine='calamine')
         
         if "filtered" in file_name.lower() and sheet_name == "Kinematics":
-            if len(df) > 6: 
+            if len(df) > 7: 
                 df = df.iloc[:-7]
                 
                 cols_to_convert = df.select_dtypes(include=['object']).columns
