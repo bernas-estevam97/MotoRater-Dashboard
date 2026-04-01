@@ -64,7 +64,7 @@ def load_excel_data(file_path, sheet_name, file_name):
         
         if "filtered" in file_name.lower() and sheet_name == "Kinematics":
             if len(df) > 6: 
-                df = df.iloc[:-6]
+                df = df.iloc[:-7]
                 
                 cols_to_convert = df.select_dtypes(include=['object']).columns
                 for col in cols_to_convert:

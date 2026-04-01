@@ -92,12 +92,18 @@ if st.button("🚀 Start Conversion", type="primary", use_container_width=True):
                     for sheet in xls.sheet_names:
                         df = pd.read_excel(xls, sheet_name=sheet)
                         
+                        # --- NEW: Drop last 7 rows for filtered kinematics ---
+                        if "_filtered" in file_base_name and sheet == "kinematics":
+                            df = df.iloc[:-7]
+                        # -----------------------------------------------------
+                        
                         # Vectorized conversion for object columns
                         for col in df.select_dtypes(include=['object']):
                             df[col] = pd.to_numeric(df[col], errors='ignore')
                         
-                        # Save to Parquet
-                        parquet_path = os.path.join(file_target_dir, f"{sheet}.parquet")
+                        # --- UPDATED: Save to Parquet with the Excel filename + sheet name ---
+                        parquet_file_name = f"{file_base_name}_{sheet}.parquet"
+                        parquet_path = os.path.join(file_target_dir, parquet_file_name)
                         df.to_parquet(parquet_path, engine='pyarrow', index=False)
                     
                     log_container.success(f"✅ Converted: {file} ({len(xls.sheet_names)} sheets)")
