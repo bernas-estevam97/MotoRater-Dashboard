@@ -1,3 +1,5 @@
+from turtle import width
+
 import streamlit as st
 import pandas as pd
 import os
@@ -46,7 +48,7 @@ with col2:
 st.divider()
 
 # --- Conversion Logic ---
-if st.button("🚀 Start Conversion", type="primary", use_container_width=True):
+if st.button("🚀 Start Conversion", type="primary", width='content'):
     if not st.session_state.source_dir or not st.session_state.target_dir:
         st.error("⚠️ Please select both a Source and Target folder first.")
     else:
