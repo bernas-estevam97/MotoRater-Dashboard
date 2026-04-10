@@ -1,8 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM --- 0. Set working directory to the script's location ---
-cd /d "%~dp0"
+REM --- 0. Lock working directory to the script's exact location ---
+pushd "%~dp0"
 
 REM ==========================================
 REM    MOTO-RATER DASHBOARD LAUNCHER
