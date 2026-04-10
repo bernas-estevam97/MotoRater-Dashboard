@@ -18,9 +18,10 @@ st.sidebar.info("Upload one or multiple Excel files below.")
 
 # NEW: Replaced Tkinter folder picker with Streamlit's multi-file uploader
 uploaded_files = st.sidebar.file_uploader(
-    "Choose Excel files", 
+    "Choose an Excel directory", 
     type=['xlsx', 'xls'], 
     accept_multiple_files=True,
+    #accept_multiple_files="directory", If I want to get directory instead but not safe in cloud server because of the ammount of files.
     label_visibility="collapsed"
 )
 
@@ -118,22 +119,43 @@ if len(files) > 0:
 
                         title = f"{', '.join(y_axis)} over {x_axis}"
                         
+                        # --- NEW: Metric Color Pickers ---
+                        st.markdown("### 🎨 Custom Metric Colors")
+                        # Create columns dynamically based on how many metrics are selected
+                        color_cols = st.columns(len(y_axis))
+                        custom_color_map = {}
+                        default_px_colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"]
+
+                        for i, col in enumerate(y_axis):
+                            with color_cols[i % len(color_cols)]: # Safe column wrapping
+                                chosen_color = st.color_picker(
+                                    f"{col}", 
+                                    value=default_px_colors[i % len(default_px_colors)],
+                                    key=f"single_color_{col}" # Keys prevent widget conflicts
+                                )
+                                # Map both the standard name and smoothed name so the color persists
+                                custom_color_map[col] = chosen_color
+                                custom_color_map[f"{col} (Smoothed)"] = chosen_color
+                        # -------------------------------
+
+                        # MODIFIED: Added color_discrete_map=custom_color_map to applicable charts
                         if chart_type == "Line": 
-                            fig = px.line(plot_df, x=x_axis, y=y_to_plot, title=title)
+                            fig = px.line(plot_df, x=x_axis, y=y_to_plot, title=title, color_discrete_map=custom_color_map)
                         elif chart_type == "Scatter": 
-                            fig = px.scatter(plot_df, x=x_axis, y=y_axis, title=title)
+                            fig = px.scatter(plot_df, x=x_axis, y=y_axis, title=title, color_discrete_map=custom_color_map)
                         elif chart_type == "Bar": 
-                            fig = px.bar(plot_df, x=x_axis, y=y_axis, title=title, barmode='group')
+                            fig = px.bar(plot_df, x=x_axis, y=y_axis, title=title, barmode='group', color_discrete_map=custom_color_map)
                         elif chart_type == "Polar (Angles)":
                             polar_df = plot_df.melt(id_vars=[x_axis], value_vars=y_to_plot, var_name='Metric', value_name='Angle')
-                            fig = px.scatter_polar(polar_df, r=x_axis, theta='Angle', color='Metric', title=title)
+                            fig = px.scatter_polar(polar_df, r=x_axis, theta='Angle', color='Metric', title=title, color_discrete_map=custom_color_map)
                             fig.update_layout(polar=dict(angularaxis=dict(direction="clockwise")))
                         elif chart_type == "Density Heatmap":
+                            # Note: Density Heatmaps use continuous color scales, so discrete mapping is omitted here
                             heat_df = plot_df.melt(id_vars=[x_axis], value_vars=y_to_plot, var_name='Metric', value_name='Value')
                             fig = px.density_heatmap(heat_df, x=x_axis, y='Value', facet_col='Metric', title=title, nbinsx=50, nbinsy=30)
                         elif chart_type == "Box Plot":
                             box_df = plot_df.melt(id_vars=[x_axis], value_vars=y_to_plot, var_name='Metric', value_name='Value')
-                            fig = px.box(box_df, x='Metric', y='Value', color='Metric', title=title)
+                            fig = px.box(box_df, x='Metric', y='Value', color='Metric', title=title, color_discrete_map=custom_color_map)
                             
                         st.plotly_chart(fig, width='stretch')
                     elif not y_axis:
@@ -261,6 +283,21 @@ if len(files) > 0:
                             st.error("Error: The column 'Time' is missing in one or more of the selected files.")
                             x_axis = None
 
+                        # --- NEW: File Color Pickers ---
+                        st.markdown("### 🎨 Custom File Colors")
+                        color_cols = st.columns(len(dfs))
+                        file_colors = {}
+                        # Plotly Express default colors to use as standard presets
+                        default_px_colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"]
+
+                        for i, filename in enumerate(dfs.keys()):
+                            with color_cols[i]:
+                                file_colors[filename] = st.color_picker(
+                                    f"{filename}", 
+                                    value=default_px_colors[i % len(default_px_colors)]
+                                )
+                        # -------------------------------
+
                         if x_axis and y_axis:
                             all_plot_data = []
                             
@@ -284,18 +321,30 @@ if len(files) > 0:
 
                             title = f"Comparing {', '.join(y_axis)} over {x_axis}"
                             
+                            # --- NEW: Map selected colors to the Legends and Sources ---
+                            custom_color_map = {}
+                            for source, color in file_colors.items():
+                                custom_color_map[source] = color # Maps for Box Plots (color='Source')
+                                for metric in y_axis:
+                                    custom_color_map[f"{source} | {metric}"] = color # Maps for Line/Scatter (color='Legend')
+                            # -----------------------------------------------------------
+
+                            # MODIFIED: Added color_discrete_map=custom_color_map to all charts
                             if chart_type == "Line":
-                                fig = px.line(melted_df, x=x_axis, y='Value', color='Legend', title=title)
+                                fig = px.line(melted_df, x=x_axis, y='Value', color='Legend', title=title, color_discrete_map=custom_color_map)
                             elif chart_type == "Scatter":
-                                fig = px.scatter(melted_df, x=x_axis, y='Value', color='Legend', title=title)
+                                fig = px.scatter(melted_df, x=x_axis, y='Value', color='Legend', title=title, color_discrete_map=custom_color_map)
                             elif chart_type == "Polar (Angles)":
-                                fig = px.scatter_polar(melted_df, r=x_axis, theta='Value', color='Legend', title=title)
+                                fig = px.scatter_polar(melted_df, r=x_axis, theta='Value', color='Legend', title=title, color_discrete_map=custom_color_map)
                                 fig.update_layout(polar=dict(angularaxis=dict(direction="clockwise")))
                             elif chart_type == "Box Plot":
-                                fig = px.box(melted_df, x='Metric', y='Value', color='Source', title=title)
+                                fig = px.box(melted_df, x='Metric', y='Value', color='Source', title=title, color_discrete_map=custom_color_map)
 
                             st.plotly_chart(fig, width='stretch')
                         elif not y_axis:
                             st.info("👈 Select common Y axes to compare the files.")
+                else:
+                    st.warning("No Excel files found.")
+
 else:
-    st.info("👈 Upload your Excel files in the sidebar to begin.")
+    st.info("👈 Select a folder to begin. Click the 📂 in the left side column")

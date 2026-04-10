@@ -6,8 +6,8 @@ import re
 import pingouin as pg
 import traceback
 
-# --- NEW PLOTLY STATS FUNCTION ---
-def add_plotly_significance_brackets(fig, df, posthocs_df, x_col, y_col):
+# --- PLOTLY STATS FUNCTION (For Box Plots in Tab 5) ---
+def add_plotly_significance_brackets(fig, df, posthocs_df, x_col, y_col, text_color="black"):
     """
     Custom function to draw statistical brackets and asterisks on Plotly grouped plots.
     Assumes exactly 2 groups are being compared.
@@ -15,36 +15,29 @@ def add_plotly_significance_brackets(fig, df, posthocs_df, x_col, y_col):
     if posthocs_df is None or posthocs_df.empty: 
         return fig
 
-    # Find the formatted p-value column from Pingouin
-    p_col = next((c for c in posthocs_df.columns if 'p-' in c.lower() or c.lower() == 'pval' or c.lower() == 'p'), None)
+    p_col = next((c for c in posthocs_df.columns if 'p-' in c.lower() or 'p_' in c.lower() or c.lower() == 'pval' or c.lower() == 'p'), None)
     if not p_col: 
         return fig
 
-    # Determine overall y-axis scale to make brackets proportional
     y_max_overall = df[y_col].max()
     y_min_overall = df[y_col].min()
     y_range = y_max_overall - y_min_overall
     if y_range == 0: y_range = y_max_overall
     
-    step_y = y_range * 0.05  # Bracket spacing height (5% of total range)
+    step_y = y_range * 0.05  
     
     for _, row in posthocs_df.iterrows():
-        # Only draw if this row corresponds to a specific Timepoint
         if x_col not in row: continue
         
         x_val = row[x_col]
-        
-        # Get the maximum y-value for this specific timepoint so the bracket clears the data
         tp_data = df[df[x_col] == x_val]
         if tp_data.empty: continue
         
         y_max_tp = tp_data[y_col].max()
         bracket_y = y_max_tp + step_y
         
-        # Parse P-Value to scientific asterisks
         raw_pval = str(row[p_col])
         text = raw_pval
-        # Extract the numeric part if formatted like "<0.0001"
         num_str = raw_pval.replace('<', '').replace('>', '').replace('=', '').strip()
         
         try:
@@ -54,36 +47,29 @@ def add_plotly_significance_brackets(fig, df, posthocs_df, x_col, y_col):
             elif val < 0.05: text = "*"
             else: text = "ns"
         except ValueError:
-            pass # If it fails to parse, just print the raw text
+            pass 
         
-        # Draw Bracket (Plotly grouped boxes offset centers by approx +/- 0.15)
         try:
             x_center = float(x_val)
-            x0 = x_center - 0.15 # Center of left box
-            x1 = x_center + 0.15 # Center of right box
+            x0 = x_center - 0.15 
+            x1 = x_center + 0.15 
             
-            # Left vertical line
-            fig.add_shape(type="line", x0=x0, x1=x0, y0=bracket_y, y1=bracket_y + step_y * 0.5, line=dict(color="black", width=1.5))
-            # Right vertical line
-            fig.add_shape(type="line", x0=x1, x1=x1, y0=bracket_y, y1=bracket_y + step_y * 0.5, line=dict(color="black", width=1.5))
-            # Top horizontal bridge
-            fig.add_shape(type="line", x0=x0, x1=x1, y0=bracket_y + step_y * 0.5, y1=bracket_y + step_y * 0.5, line=dict(color="black", width=1.5))
+            # Apply user-selected color to brackets and text
+            fig.add_shape(type="line", x0=x0, x1=x0, y0=bracket_y, y1=bracket_y + step_y * 0.5, line=dict(color=text_color, width=1.5))
+            fig.add_shape(type="line", x0=x1, x1=x1, y0=bracket_y, y1=bracket_y + step_y * 0.5, line=dict(color=text_color, width=1.5))
+            fig.add_shape(type="line", x0=x0, x1=x1, y0=bracket_y + step_y * 0.5, y1=bracket_y + step_y * 0.5, line=dict(color=text_color, width=1.5))
             
-            # Add Asterisks text
             fig.add_annotation(
-                x=x_center,
-                y=bracket_y + step_y * 1.5,
-                text=text,
-                showarrow=False,
-                font=dict(size=14, color="black", family="Arial")
+                x=x_center, y=bracket_y + step_y * 1.5, text=text, showarrow=False, font=dict(size=14, color=text_color, family="Arial")
             )
         except ValueError:
-            continue # Skip if x isn't numeric
+            continue 
             
     return fig
 # ---------------------------------
 
 # --- CONFIGURATION ---
+st.set_page_config(layout="wide") 
 st.title("🐁 Kinematics Longitudinal Analyzer")
 
 column_rename_map = {
@@ -131,8 +117,7 @@ uploaded_file = st.file_uploader("Upload your cleaned Descriptive Statistics Exc
 
 if uploaded_file:
     if 'data_dict' not in st.session_state or st.session_state.get('uploaded_filename') != uploaded_file.name:
-        # NEW: Added engine='calamine' for faster reading
-        xls = pd.ExcelFile(uploaded_file, engine='calamine')
+        xls = pd.ExcelFile(uploaded_file)
         sheet_names = xls.sheet_names
         st.session_state.data_dict = {
             sheet: pd.read_excel(xls, sheet_name=sheet).rename(columns=column_rename_map) 
@@ -145,6 +130,25 @@ if uploaded_file:
 
     data_dict = st.session_state.data_dict
     sheet_names = st.session_state.sheet_names
+
+    # --- SIDEBAR SETTINGS ---
+    st.sidebar.header("🎨 Custom Group Colors")
+    color_map = {}
+    if 'mapping_df' in st.session_state:
+        extracted_groups = [g for g in st.session_state.mapping_df['Group'].unique() if g != "Unknown"]
+        default_colors = px.colors.qualitative.Plotly + px.colors.qualitative.D3
+        for i, grp in enumerate(sorted(extracted_groups)):
+            default_hex = default_colors[i % len(default_colors)]
+            color_map[grp] = st.sidebar.color_picker(f"{grp} Color", default_hex, key=f"color_{grp}")
+            
+    st.sidebar.markdown("---")
+    st.sidebar.header("⚙️ Global Plot Settings")
+    annotation_color = st.sidebar.color_picker(
+        "Significance Annotation Color", 
+        "#000000", 
+        help="Change this to White (#FFFFFF) if you are using Streamlit's Dark Mode so the asterisks are visible."
+    )
+    # ----------------------------------------
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Data Viewer", 
@@ -177,10 +181,8 @@ if uploaded_file:
         st.subheader("Define Groups and Parse Timepoints")
         st.markdown("""
         Manually define your experimental groups below. 
-        * **Group Name**: The clean name displayed on plots (e.g., "Wildtype Males").
-        * **Tag in ID**: The exact text snippet the program should look for in the Subject ID (e.g., "WT_M").
-        
-        *Note: If an ID matches multiple tags, it will belong to both groups.*
+        * **Group Name**: The clean name displayed on plots.
+        * **Tag in ID**: The exact text snippet the program should look for in the Subject ID.
         """)
         
         if 'group_definitions' not in st.session_state:
@@ -247,29 +249,26 @@ if uploaded_file:
             st.session_state.mapping_df = mapping_df
             st.session_state.group_definitions_final = valid_groups 
             
-            st.success("Variables extracted successfully using custom mapping. Multi-group assignments enabled.")
-            
-            map_df_clean = st.session_state.mapping_df
+            st.success("Variables extracted successfully! You can now choose your group colors in the sidebar.")
+            st.rerun() 
 
+        if 'mapping_df' in st.session_state:
+            map_df_clean = st.session_state.mapping_df
             st.markdown("### 📋 Group Summary (N)")
             if not map_df_clean.empty and 'Group' in map_df_clean.columns:
                 group_counts = map_df_clean[map_df_clean['Group'] != 'Unknown'].groupby('Group')['Subject_ID'].nunique().reset_index()
                 if not group_counts.empty:
                     group_counts.columns = ['Experimental Group', 'Number of Unique Subjects (N)']
                     st.dataframe(group_counts, width='stretch', hide_index=True)
-                else:
-                    st.warning("No groups matched. Check your tags.")
-            else:
-                st.info("Extract variables to see summary.")
 
     # --- TAB 4: LONGITUDINAL PLOTTING ---
     with tab4:
-        st.subheader("Plot Longitudinal Means")
+        st.subheader("Plot Longitudinal Progression")
         
         if 'mapping_df' not in st.session_state:
             st.warning("⚠️ Please go to the 'Experimental Groups Setup' tab and extract variables first.")
         else:
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns([1.5, 1.5, 1])
             with col1:
                 plot_sheet = st.selectbox("Select Statistic (Sheet):", sheet_names, key="plot_sheet")
             
@@ -278,6 +277,8 @@ if uploaded_file:
             
             with col2:
                 plot_metric = st.selectbox("Select Measurement to Plot:", numeric_cols, key="plot_metric_select")
+            with col3:
+                plot_format = st.selectbox("Plot Format:", ["Line Plot", "Bar Plot", "Box Plot", "Violin Plot"])
             
             all_plot_groups = sorted([g for g in st.session_state.mapping_df['Group'].unique() if g != "Unknown"])
             
@@ -288,7 +289,14 @@ if uploaded_file:
                 key="plot_groups_multiselect"
             )
             
-            show_error_bars = st.checkbox("Show Standard Error of the Mean (SEM) bars", value=True, key="sem_bars_checkbox")
+            col_opt1, col_opt2 = st.columns(2)
+            with col_opt1:
+                if plot_format in ["Line Plot", "Bar Plot"]:
+                    show_error_bars = st.checkbox("Show Standard Error of the Mean (SEM) bars", value=True, key="sem_bars_checkbox")
+                else:
+                    show_points = st.checkbox("Show all data points", value=True, key="show_points_checkbox")
+            with col_opt2:
+                show_pvals_on_line = st.checkbox("Show statistical significance (p-values) at each timepoint", value=False)
 
             if not selected_plot_groups:
                 st.info("Please select at least one group to plot.")
@@ -307,21 +315,148 @@ if uploaded_file:
                     summary_df = summary_df.rename(columns={'mean': plot_metric, 'sem': 'SEM'})
                     summary_df = summary_df.sort_values(by='Timepoint_Weeks')
 
-                    fig = px.line(
-                        summary_df, 
-                        x='Timepoint_Weeks', 
-                        y=plot_metric, 
-                        color='Group', 
-                        markers=True,
-                        error_y='SEM' if show_error_bars else None,
-                        title=f"Longitudinal Progression of {plot_metric}",
-                        labels={'Timepoint_Weeks': 'Timepoint (Weeks)', plot_metric: f'{plot_metric}'}
-                    )
+                    title_text = f"Longitudinal Progression of {plot_metric}"
+                    
+                    if plot_format == "Line Plot":
+                        fig = px.line(
+                            summary_df, x='Timepoint_Weeks', y=plot_metric, color='Group', markers=True,
+                            error_y='SEM' if show_error_bars else None, title=title_text,
+                            labels={'Timepoint_Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map 
+                        )
+                    elif plot_format == "Bar Plot":
+                        fig = px.bar(
+                            summary_df, x='Timepoint_Weeks', y=plot_metric, color='Group', barmode='group',
+                            error_y='SEM' if show_error_bars else None, title=title_text,
+                            labels={'Timepoint_Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map 
+                        )
+                    elif plot_format == "Box Plot":
+                        fig = px.box(
+                            merged_df, x='Timepoint_Weeks', y=plot_metric, color='Group',
+                            points="all" if show_points else False, title=title_text,
+                            labels={'Timepoint_Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map 
+                        )
+                    elif plot_format == "Violin Plot":
+                        fig = px.violin(
+                            merged_df, x='Timepoint_Weeks', y=plot_metric, color='Group', box=True,
+                            points="all" if show_points else False, title=title_text,
+                            labels={'Timepoint_Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map 
+                        )
+                    
                     try:
-                        summary_df['Timepoint_Weeks'] = pd.to_numeric(summary_df['Timepoint_Weeks'])
-                        fig.update_layout(xaxis=dict(type='linear', dtick=summary_df['Timepoint_Weeks'].unique()[1]-summary_df['Timepoint_Weeks'].unique()[0] if len(summary_df['Timepoint_Weeks'].unique())>1 else 1))
+                        merged_df['Timepoint_Weeks'] = pd.to_numeric(merged_df['Timepoint_Weeks'])
+                        dtick_val = sorted(merged_df['Timepoint_Weeks'].unique())[1] - sorted(merged_df['Timepoint_Weeks'].unique())[0] if len(merged_df['Timepoint_Weeks'].unique()) > 1 else 1
+                        fig.update_layout(xaxis=dict(type='linear', dtick=dtick_val))
                     except:
                         fig.update_layout(xaxis=dict(type='category'))
+                        
+                    if show_pvals_on_line:
+                        if len(selected_plot_groups) != 2:
+                            st.warning("Statistical significance on the plot requires exactly 2 groups selected.")
+                        else:
+                            with st.expander("🔍 P-Value Debugging Log", expanded=False):
+                                try:
+                                    merged_df_clean = merged_df.dropna(subset=[plot_metric, 'Timepoint_Weeks', 'Subject_ID', 'Group'])
+                                    st.write(f"**Step 1:** Initial cleaned data has **{len(merged_df_clean)}** rows.")
+                                    int_posthocs = pd.DataFrame()
+                                    
+                                    # 1. Try strict repeated measures test
+                                    expected_tps = merged_df_clean['Timepoint_Weeks'].nunique()
+                                    subj_tps = merged_df_clean.groupby('Subject_ID')['Timepoint_Weeks'].nunique()
+                                    complete_subjs = subj_tps[subj_tps == expected_tps].index
+                                    df_complete = merged_df_clean[merged_df_clean['Subject_ID'].isin(complete_subjs)]
+                                    
+                                    st.write(f"**Step 2:** Found **{df_complete['Subject_ID'].nunique()}** complete subjects across **{expected_tps}** timepoints.")
+
+                                    if df_complete['Subject_ID'].nunique() >= 2:
+                                        try:
+                                            posthocs_line = pg.pairwise_tests(
+                                                dv=plot_metric, within='Timepoint_Weeks', between='Group', 
+                                                subject='Subject_ID', data=df_complete, padjust='holm'
+                                            )
+                                            int_posthocs = posthocs_line[posthocs_line['Contrast'] == 'Timepoint_Weeks * Group']
+                                            st.success("Successfully generated Repeated Measures ANOVA post-hocs.")
+                                        except Exception as e:
+                                            st.warning(f"Repeated measures ANOVA failed: {e}")
+                                    else:
+                                        st.warning("Not enough complete subjects to run Repeated Measures ANOVA.")
+                                    
+                                    # 2. FALLBACK to independent t-tests
+                                    if int_posthocs.empty:
+                                        st.info("Falling back to Independent T-tests at each timepoint...")
+                                        rows = []
+                                        for tp in merged_df_clean['Timepoint_Weeks'].unique():
+                                            tp_df_t = merged_df_clean[merged_df_clean['Timepoint_Weeks'] == tp]
+                                            g1 = tp_df_t[tp_df_t['Group'] == selected_plot_groups[0]][plot_metric]
+                                            g2 = tp_df_t[tp_df_t['Group'] == selected_plot_groups[1]][plot_metric]
+                                            st.write(f"  - Week {tp}: Group 1 (N={len(g1)}), Group 2 (N={len(g2)})")
+                                            if len(g1) > 1 and len(g2) > 1:
+                                                try:
+                                                    t_res = pg.ttest(g1, g2)
+                                                    pval = t_res['p-val'].values[0]
+                                                    rows.append({'Timepoint_Weeks': tp, 'p_unc': pval})
+                                                    st.write(f"    -> T-test successful. p-value: {pval:.4f}")
+                                                except Exception as e: 
+                                                    st.error(f"    -> T-test failed at Week {tp}: {e}")
+                                        int_posthocs = pd.DataFrame(rows)
+
+                                    # Display resulting dataframe
+                                    st.write("**Step 3: Final Output DataFrame:**")
+                                    st.dataframe(int_posthocs, width='stretch')
+
+                                    # 3. Plot the asterisks dynamically based on plot type height
+                                    if not int_posthocs.empty:
+                                        valid_p_cols = ['p-unc', 'p_unc', 'p-cor', 'p_cor', 'p-corr', 'p_corr', 'p-val', 'p_val', 'pval', 'p']
+                                        p_col = next((c for c in int_posthocs.columns if c.lower() in valid_p_cols), None)
+                                        if not p_col:
+                                            p_col = next((c for c in int_posthocs.columns if 'p-' in c.lower() or 'p_' in c.lower() or 'pval' in c.lower()), None)
+
+                                        if p_col:
+                                            st.write(f"**Step 4:** Using column `{p_col}` for plotting asterisks.")
+                                            
+                                            y_max_overall = merged_df[plot_metric].max()
+                                            y_min_overall = merged_df[plot_metric].min()
+                                            offset = (y_max_overall - y_min_overall) * 0.08 if y_max_overall != y_min_overall else (y_max_overall * 0.05)
+
+                                            for _, row in int_posthocs.iterrows():
+                                                tp = row['Timepoint_Weeks']
+                                                pval = row[p_col]
+                                                
+                                                if pd.isna(pval): continue
+
+                                                if pval < 0.001: star = "***"
+                                                elif pval < 0.01: star = "**"
+                                                elif pval < 0.05: star = "*"
+                                                else: star = "ns"
+                                                
+                                                # Determine highest point at this specific timepoint based on plot type
+                                                if plot_format in ["Line Plot", "Bar Plot"]:
+                                                    tp_df = summary_df[summary_df['Timepoint_Weeks'].astype(str) == str(tp)]
+                                                    if tp_df.empty: continue
+                                                    if show_error_bars:
+                                                        y_highest_tp = (tp_df[plot_metric] + tp_df['SEM']).max()
+                                                    else:
+                                                        y_highest_tp = tp_df[plot_metric].max()
+                                                else:
+                                                    # For Box and Violin, we must look at the raw data maximums
+                                                    tp_raw_df = merged_df[merged_df['Timepoint_Weeks'].astype(str) == str(tp)]
+                                                    if tp_raw_df.empty: continue
+                                                    y_highest_tp = tp_raw_df[plot_metric].max()
+                                                    
+                                                target_y = y_highest_tp + offset
+                                                    
+                                                fig.add_annotation(
+                                                    x=tp,
+                                                    y=target_y,
+                                                    text=star,
+                                                    showarrow=False,
+                                                    font=dict(size=16, color=annotation_color, family="Arial")
+                                                )
+                                        else:
+                                            st.warning("Could not find a valid p-value column to plot.")
+                                except Exception as e:
+                                    st.error("🚨 A critical error occurred in the p-value calculation block:")
+                                    st.code(traceback.format_exc(), language="python")
+                    # ----------------------------------------
                     
                     st.plotly_chart(fig, width='stretch')
 
@@ -379,9 +514,7 @@ if uploaded_file:
                     merged_stat_df[stat_metric] = pd.to_numeric(merged_stat_df[stat_metric], errors='coerce')
                     clean_df = merged_stat_df.dropna(subset=[stat_metric, 'Timepoint_Weeks', 'Subject_ID', 'Group'])
                     
-                    filtered_df = clean_df[
-                        (clean_df['Timepoint_Weeks'].isin(selected_timepoints))
-                    ]
+                    filtered_df = clean_df[(clean_df['Timepoint_Weeks'].isin(selected_timepoints))]
                     
                     agg_df = filtered_df.groupby(['Subject_ID', 'Group', 'Timepoint_Weeks'])[stat_metric].mean().reset_index()
                     
@@ -440,12 +573,14 @@ if uploaded_file:
                                 subject='Subject_ID', 
                                 data=final_df
                             )
-                            for col in ['p-unc', 'p-val', 'p-GG-corr']:
+                            for col in ['p-unc', 'p_unc', 'p-val', 'p_val', 'p-GG-corr', 'p_GG_corr']:
                                 if col in anova_results.columns:
                                     anova_results[col] = anova_results[col].apply(format_pval)
                             
                             if 'p-GG-corr' in anova_results.columns and 'p-val' not in anova_results.columns:
                                 anova_results = anova_results.rename(columns={'p-GG-corr': 'p-val'})
+                            elif 'p_GG_corr' in anova_results.columns and 'p_val' not in anova_results.columns:
+                                anova_results = anova_results.rename(columns={'p_GG_corr': 'p_val'})
 
                             st.dataframe(anova_results, width='stretch', hide_index=True)
                         except Exception as e:
@@ -470,7 +605,7 @@ if uploaded_file:
                             
                             if not interaction_posthocs.empty:
                                 display_posthocs = interaction_posthocs.copy()
-                                p_cols = [c for c in display_posthocs.columns if 'p-' in c.lower() or c.lower() == 'pval' or c.lower() == 'p']
+                                p_cols = [c for c in display_posthocs.columns if 'p-' in c.lower() or 'p_' in c.lower() or c.lower() == 'pval' or c.lower() == 'p']
                                 
                                 for col in p_cols:
                                     display_posthocs[col] = display_posthocs[col].apply(format_pval)
@@ -485,7 +620,6 @@ if uploaded_file:
                             with st.expander("View Post-Hoc Error Log", expanded=True):
                                 st.code(traceback.format_exc(), language="python")
 
-                        # --- NEW: INTERACTIVE BOX PLOT WITH P-VALUES ---
                         if display_posthocs is not None and not display_posthocs.empty:
                             st.markdown(f"### 3. Distribution & Significance ({stat_metric})")
                             
@@ -495,27 +629,25 @@ if uploaded_file:
                                 y=stat_metric, 
                                 color='Group',
                                 title=f"Box Plot Distributions (with Post-Hoc Significance)",
-                                points="all", # Shows individual data points alongside the boxes
-                                color_discrete_sequence=px.colors.qualitative.Pastel
+                                points="all",
+                                color_discrete_map=color_map 
                             )
                             
-                            # Force numeric x-axis to ensure our custom offsets line up properly
                             try:
                                 dtick_val = final_df['Timepoint_Weeks'].unique()[1] - final_df['Timepoint_Weeks'].unique()[0] if len(final_df['Timepoint_Weeks'].unique()) > 1 else 1
                                 fig_box.update_layout(xaxis=dict(type='linear', dtick=dtick_val))
                             except:
-                                pass # Fallback if timepoints aren't clean numbers
+                                pass 
                             
-                            # Apply our custom annotation function!
                             fig_box = add_plotly_significance_brackets(
                                 fig=fig_box, 
                                 df=final_df, 
                                 posthocs_df=display_posthocs, 
                                 x_col='Timepoint_Weeks', 
-                                y_col=stat_metric
+                                y_col=stat_metric,
+                                text_color=annotation_color 
                             )
                             
-                            # Increase top margin slightly so brackets don't get cut off by the title
                             fig_box.update_layout(margin=dict(t=60))
                             st.plotly_chart(fig_box, width='stretch')
 
@@ -559,7 +691,7 @@ if uploaded_file:
                 )
             
             tooltip_text = (
-                "Highly recommended! Since angles and distances use different scales, raw values skew the plot. "
+                "Highly recommended! Since angles and distances use different scales, raw values skew the plot. Measurements with larger means will also dominate the shape, making it hard to compare groups across metrics."
                 "Proportional normalization divides each metric by its highest group mean. The highest group reaches the outer edge (1.0), "
                 "and other groups are plotted proportionally (e.g., 0.85). This preserves the true ratios between your groups!"
             )
@@ -590,11 +722,22 @@ if uploaded_file:
                         
                         if normalize_radar:
                             for m in radar_metrics:
+                                # Max sclaing normalization (preserves ratios between groups)
+                                # ---------------------------------------------------------#
                                 max_val = agg_r[m].max()
                                 if max_val != 0 and pd.notna(max_val):
-                                    agg_r[m] = agg_r[m] / max_val
+                                    agg_r[m] = agg_r[m] / max_val 
                                 else:
-                                    agg_r[m] = 0.0 
+                                    agg_r[m] = 0.0
+
+
+                                # Alternative Min-Max Scaling
+                                # min_val = agg_r[m].min()
+                                # max_val = agg_r[m].max()
+                                # if max_val != min_val:
+                                #     agg_r[m] = (agg_r[m] - min_val) / (max_val - min_val)
+                                # else:
+                                #     agg_r[m] = 0.0
 
                         melted_r = pd.melt(
                             agg_r, 
@@ -617,21 +760,57 @@ if uploaded_file:
 
                         melted_r_closed = pd.concat(dfs_to_concat)
                         
+                        # 1. Generate a dynamic string of the selected groups (e.g., "Wildtype vs. Transgenic")
+                        groups_str = " vs. ".join(radar_groups)
+                        
+                        # Generate base plot (removed the title argument here since we build a custom one below)
                         fig_radar = px.line_polar(
                             melted_r_closed, 
                             r='Value', 
                             theta='Measurement', 
                             color='Group', 
                             line_close=True,
-                            title=f"Kinematic Profile at {radar_tp} Weeks {'(Normalized)' if normalize_radar else '(Raw Values)'}",
-                            color_discrete_sequence=px.colors.qualitative.D3 
+                            color_discrete_map=color_map
                         )
                         fig_radar.update_traces(fill='toself', opacity=0.3)
                         
+                        # --- MODIFICATION START: Contrast, Background, and Dynamic Title ---
+                        polar_config = dict(
+                            angularaxis=dict(
+                                tickfont=dict(color="black", size=12) 
+                            ),
+                            radialaxis=dict(
+                                tickfont=dict(color="black"),
+                                gridcolor="lightgrey", 
+                                visible=True
+                            )
+                        )
+                        
+                        # Preserve normalized range logic
                         if normalize_radar:
-                            fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 1])))
+                            polar_config['radialaxis']['range'] = [0, 1]
                             
+                        fig_radar.update_layout(
+                            paper_bgcolor="white", # Clean white chart area
+                            plot_bgcolor="white",
+                            polar=polar_config,
+                            # 2. Dynamic Title with Groups as a subtitle
+                            title=dict(
+                                text=f"Kinematic Profile at {radar_tp} Weeks {'(Normalized)' if normalize_radar else '(Raw Values)'}<br><sup style='color: dimgrey;'>{groups_str}</sup>",
+                                font=dict(color="black", size=18)
+                            ),
+                            # 3. Explicitly force both the legend title ('Group') and its text to be black
+                            legend=dict(
+                                title=dict(text="Group", font=dict(color="black", size=14, weight="bold")),
+                                font=dict(color="black", size=12)
+                            )
+                        )
+                        
+                        # Display modified plot
                         st.plotly_chart(fig_radar, width='stretch')
+            st.markdown("---")
+            st.markdown("##### ❗Important Note:")
+            radar_info = st.markdown("Every time any color, group, timepoint, or metric selection is changed, your current radar plot generated will disappear and you will need to generate the radar plot again using the **Generate Radar Plot** button to update the visualization. This ensures that the plot accurately reflects your current selections and allows you to explore different combinations of metrics and groups effectively.", text_alignment="justify")
 
 else:
     st.info("Please upload your Excel file to get started.")

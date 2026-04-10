@@ -25,6 +25,12 @@ tutorial_page_kine = st.Page(
     icon="❓",
 )
 
+stat_info_page = st.Page(
+    page="stat_info.py",
+    title="Statistical Methodology",
+    icon="🧮"
+)
+
 all_measurements_page = st.Page(
     page="time_series_analysis_excel.py", 
     title="Time-Series analysis - Excel Files", 
@@ -52,7 +58,7 @@ converter_page = st.Page(
 # 3. Create the navigation menu
 # Using a dictionary allows you to group pages under a nice header in the sidebar
 pg = st.navigation(
-    {"Home": [intro_page, tutorial_page_time, tutorial_page_kine],
+    {"Home": [intro_page, tutorial_page_time, tutorial_page_kine, stat_info_page],
      "MotoRater Tools": [all_measurements_page, all_measurements_parquet, kinematics_analysis_page, converter_page]}
 )
 
