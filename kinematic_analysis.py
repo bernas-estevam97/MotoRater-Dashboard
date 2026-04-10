@@ -691,7 +691,7 @@ if uploaded_file:
                 )
             
             tooltip_text = (
-                "Highly recommended! Since angles and distances use different scales, raw values skew the plot. "
+                "Highly recommended! Since angles and distances use different scales, raw values skew the plot. Measurements with larger means will also dominate the shape, making it hard to compare groups across metrics."
                 "Proportional normalization divides each metric by its highest group mean. The highest group reaches the outer edge (1.0), "
                 "and other groups are plotted proportionally (e.g., 0.85). This preserves the true ratios between your groups!"
             )
@@ -722,11 +722,22 @@ if uploaded_file:
                         
                         if normalize_radar:
                             for m in radar_metrics:
+                                # Max sclaing normalization (preserves ratios between groups)
+                                # ---------------------------------------------------------#
                                 max_val = agg_r[m].max()
                                 if max_val != 0 and pd.notna(max_val):
-                                    agg_r[m] = agg_r[m] / max_val
+                                    agg_r[m] = agg_r[m] / max_val 
                                 else:
-                                    agg_r[m] = 0.0 
+                                    agg_r[m] = 0.0
+
+
+                                # Alternative Min-Max Scaling
+                                # min_val = agg_r[m].min()
+                                # max_val = agg_r[m].max()
+                                # if max_val != min_val:
+                                #     agg_r[m] = (agg_r[m] - min_val) / (max_val - min_val)
+                                # else:
+                                #     agg_r[m] = 0.0
 
                         melted_r = pd.melt(
                             agg_r, 
@@ -749,21 +760,57 @@ if uploaded_file:
 
                         melted_r_closed = pd.concat(dfs_to_concat)
                         
+                        # 1. Generate a dynamic string of the selected groups (e.g., "Wildtype vs. Transgenic")
+                        groups_str = " vs. ".join(radar_groups)
+                        
+                        # Generate base plot (removed the title argument here since we build a custom one below)
                         fig_radar = px.line_polar(
                             melted_r_closed, 
                             r='Value', 
                             theta='Measurement', 
                             color='Group', 
                             line_close=True,
-                            title=f"Kinematic Profile at {radar_tp} Weeks {'(Normalized)' if normalize_radar else '(Raw Values)'}",
                             color_discrete_map=color_map
                         )
                         fig_radar.update_traces(fill='toself', opacity=0.3)
                         
+                        # --- MODIFICATION START: Contrast, Background, and Dynamic Title ---
+                        polar_config = dict(
+                            angularaxis=dict(
+                                tickfont=dict(color="black", size=12) 
+                            ),
+                            radialaxis=dict(
+                                tickfont=dict(color="black"),
+                                gridcolor="lightgrey", 
+                                visible=True
+                            )
+                        )
+                        
+                        # Preserve normalized range logic
                         if normalize_radar:
-                            fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 1])))
+                            polar_config['radialaxis']['range'] = [0, 1]
                             
+                        fig_radar.update_layout(
+                            paper_bgcolor="white", # Clean white chart area
+                            plot_bgcolor="white",
+                            polar=polar_config,
+                            # 2. Dynamic Title with Groups as a subtitle
+                            title=dict(
+                                text=f"Kinematic Profile at {radar_tp} Weeks {'(Normalized)' if normalize_radar else '(Raw Values)'}<br><sup style='color: dimgrey;'>{groups_str}</sup>",
+                                font=dict(color="black", size=18)
+                            ),
+                            # 3. Explicitly force both the legend title ('Group') and its text to be black
+                            legend=dict(
+                                title=dict(text="Group", font=dict(color="black", size=14, weight="bold")),
+                                font=dict(color="black", size=12)
+                            )
+                        )
+                        
+                        # Display modified plot
                         st.plotly_chart(fig_radar, width='stretch')
+            st.markdown("---")
+            st.markdown("##### ❗Important Note:")
+            radar_info = st.markdown("Every time any color, group, timepoint, or metric selection is changed, your current radar plot generated will disappear and you will need to generate the radar plot again using the **Generate Radar Plot** button to update the visualization. This ensures that the plot accurately reflects your current selections and allows you to explore different combinations of metrics and groups effectively.", text_alignment="justify")
 
 else:
     st.info("Please upload your Excel file to get started.")
