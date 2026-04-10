@@ -1,8 +1,11 @@
 @echo off
 setlocal enabledelayedexpansion
 
+REM --- 0. Set working directory to the script's location ---
+cd /d "%~dp0"
+
 REM ==========================================
-REM       MOTO-RATER DASHBOARD LAUNCHER
+REM    MOTO-RATER DASHBOARD LAUNCHER
 REM ==========================================
 
 REM --- Configuration ---
@@ -17,15 +20,18 @@ python -c "import sys; exit(0 if sys.version_info >= (3, 12) else 1)" >nul 2>&1
 
 if %errorlevel% neq 0 (
     echo [System] Compatible Python (3.12+) not found. Installing via Winget...
-    winget install -e --id Python.Python.3.12
+    REM Added flags to automatically accept agreements so the script doesn't freeze waiting for user input
+    winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
     
-    REM Try to update PATH for the current session (Winget defaults to this location)
-    set "PATH=%PATH%;%LOCALAPPDATA%\Programs\Python\Python312"
+    REM Try to update PATH for the current session (Winget defaults to this location for user installs)
+    set "PATH=%LOCALAPPDATA%\Programs\Python\Python312;%LOCALAPPDATA%\Programs\Python\Python312\Scripts;%PATH%"
     
     REM Verify the installation succeeded
     python -c "import sys; exit(0 if sys.version_info >= (3, 12) else 1)" >nul 2>&1
     if !errorlevel! neq 0 (
-        echo [Error] Python 3.12 installation failed, or you may need to restart your computer to update the system PATH.
+        echo.
+        echo [Error] Python 3.12 was installed, but the system needs to refresh.
+        echo Please close this window and double-click the batch file again.
         pause
         exit /b
     )
@@ -50,7 +56,7 @@ if exist "%MARKER_FILE%" (
     REM === FAST LANE ===
     cls
     echo ==================================================
-    echo      		MOTO-RATER DASHBOARD
+    echo             MOTO-RATER DASHBOARD
     echo ==================================================
     echo.
     echo [System] Environment loaded.
@@ -100,13 +106,13 @@ if %errorlevel% neq 0 goto :error
 
 set /a current_step+=1
 set "bar=[######..]"
-call :draw_progress "Installing Python Calamine - Efficient Excel reader"
+call :draw_progress "Installing Python Calamine (Efficient Excel reader)"
 pip install python-calamine --quiet >> install_log.txt 2>&1
 if %errorlevel% neq 0 goto :error
 
 set /a current_step+=1
 set "bar=[#######.]"
-call :draw_progress "Installing Pyarrow - Parquet Files"
+call :draw_progress "Installing Pyarrow (Parquet Files)"
 pip install pyarrow --quiet >> install_log.txt 2>&1
 if %errorlevel% neq 0 goto :error
 
@@ -130,14 +136,15 @@ echo Launching MotoRater Dashboard...
 timeout /t 2 >nul
 
 :launch
-streamlit run main.py
+REM Using python -m streamlit ensures it uses the venv's streamlit explicitly
+python -m streamlit run main.py
 exit /b
 
 REM --- Helper Function: Draw Progress ---
 :draw_progress
 cls
 echo ==================================================
-echo      	MOTO-RATER DASHBOARD SETUP
+echo        MOTO-RATER DASHBOARD SETUP
 echo ==================================================
 echo.
 echo %bar% Step %current_step%/%TOTAL_STEPS%
