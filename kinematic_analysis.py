@@ -216,8 +216,17 @@ if uploaded_file:
             valid_groups = valid_groups.sort_values('tag_length', ascending=False).drop(columns=['tag_length'])
 
             def extract_timepoint(id_str):
-                match = re.search(r'(\d+)[Ww]', str(id_str))
-                return int(match.group(1)) if match else None
+                # 1st Check: Look for format like "4W", "12w", etc.
+                match_w = re.search(r'(\d+)[Ww]', str(id_str))
+                if match_w: 
+                    return int(match_w.group(1))
+                
+                # 2nd Check: Look for format like "T1", "t13", etc.
+                match_t = re.search(r'[Tt](\d+)', str(id_str))
+                if match_t: 
+                    return int(match_t.group(1))
+                
+                return None
 
             def extract_subject_id(id_str):
                 return str(id_str).split('_')[0]
@@ -281,13 +290,24 @@ if uploaded_file:
                 plot_format = st.selectbox("Plot Format:", ["Line Plot", "Bar Plot", "Box Plot", "Violin Plot"])
             
             all_plot_groups = sorted([g for g in st.session_state.mapping_df['Group'].unique() if g != "Unknown"])
+            all_plot_timepoints = sorted(st.session_state.mapping_df['Timepoint_Weeks'].dropna().unique())
             
-            selected_plot_groups = st.multiselect(
-                "Select Groups to Display:", 
-                all_plot_groups, 
-                default=all_plot_groups[:2] if len(all_plot_groups) >= 2 else all_plot_groups,
-                key="plot_groups_multiselect"
-            )
+            # Put groups and timepoints side-by-side
+            col_grp, col_tp = st.columns(2)
+            with col_grp:
+                selected_plot_groups = st.multiselect(
+                    "Select Groups to Display:", 
+                    all_plot_groups, 
+                    default=all_plot_groups[:2] if len(all_plot_groups) >= 2 else all_plot_groups,
+                    key="plot_groups_multiselect"
+                )
+            with col_tp:
+                selected_plot_timepoints = st.multiselect(
+                    "Select Timepoints to Display:", 
+                    all_plot_timepoints, 
+                    default=all_plot_timepoints,
+                    key="plot_tps_multiselect"
+                )
             
             col_opt1, col_opt2 = st.columns(2)
             with col_opt1:
@@ -298,11 +318,16 @@ if uploaded_file:
             with col_opt2:
                 show_pvals_on_line = st.checkbox("Show statistical significance (p-values) at each timepoint", value=False)
 
-            if not selected_plot_groups:
-                st.info("Please select at least one group to plot.")
+            if not selected_plot_groups or not selected_plot_timepoints:
+                st.info("Please select at least one group and one timepoint to plot.")
             else:
                 mapping_df = st.session_state.mapping_df
-                mapping_filtered = mapping_df[mapping_df['Group'].isin(selected_plot_groups)]
+                
+                # Apply both Group and Timepoint filters!
+                mapping_filtered = mapping_df[
+                    (mapping_df['Group'].isin(selected_plot_groups)) & 
+                    (mapping_df['Timepoint_Weeks'].isin(selected_plot_timepoints))
+                ]
                 
                 merged_df = pd.merge(df_to_plot[['Ids', plot_metric]], mapping_filtered, on='Ids')
                 merged_df[plot_metric] = pd.to_numeric(merged_df[plot_metric], errors='coerce')
