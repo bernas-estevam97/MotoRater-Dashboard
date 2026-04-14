@@ -227,9 +227,16 @@ if uploaded_file:
                     return int(match_t.group(1))
                 
                 return None
-
+            
             def extract_subject_id(id_str):
-                return str(id_str).split('_')[0]
+                tokens = str(id_str).split('_')
+                for i, token in enumerate(tokens):
+                    # Stop combining chunks when we hit the timepoint token (like "12W" or "T1")
+                    if re.fullmatch(r'(?:[Ww]eek\s*)?\d+\s*[Ww]|[Ww]\s*\d+|[Tt]\s*\d+|\d+\s*[Tt]', token):
+                        return "_".join(tokens[:i])
+                
+                # Fallback just in case
+                return tokens[0]
 
             mapping_records = []
             for id_str in unique_ids:
@@ -259,16 +266,72 @@ if uploaded_file:
             st.session_state.group_definitions_final = valid_groups 
             
             st.success("Variables extracted successfully! You can now choose your group colors in the sidebar.")
-            st.rerun() 
-
+            st.rerun()
+        
+        # --- NEW: EXCLUDE SUBJECTS UI ---
         if 'mapping_df' in st.session_state:
-            map_df_clean = st.session_state.mapping_df
+            st.markdown("### 🚫 Exclude Specific Subjects")
+            all_extracted_subjects = sorted(st.session_state.mapping_df['Subject_ID'].dropna().unique())
+            
+            # Use a multiselect so the user can dynamically drop subjects
+            subjects_to_exclude = st.multiselect(
+                "Select any subjects you want to completely remove from all plots and stats (e.g., outliers, dropouts):", 
+                options=all_extracted_subjects,
+                key="exclude_subjects_ui"
+            )
+            
+            # Create a clean copy of the dataframe with those subjects removed
+            map_df_clean = st.session_state.mapping_df.copy()
+            if subjects_to_exclude:
+                map_df_clean = map_df_clean[~map_df_clean['Subject_ID'].isin(subjects_to_exclude)]
+                st.warning(f"Excluded {len(subjects_to_exclude)} subjects from the dataset.")
+            # ---------------------------------
+
             st.markdown("### 📋 Group Summary (N)")
             if not map_df_clean.empty and 'Group' in map_df_clean.columns:
+                # IMPORTANT: Use map_df_clean here instead of st.session_state.mapping_df
                 group_counts = map_df_clean[map_df_clean['Group'] != 'Unknown'].groupby('Group')['Subject_ID'].nunique().reset_index()
                 if not group_counts.empty:
                     group_counts.columns = ['Experimental Group', 'Number of Unique Subjects (N)']
                     st.dataframe(group_counts, width='stretch', hide_index=True)
+
+        # if 'mapping_df' in st.session_state:
+        #     map_df_clean = st.session_state.mapping_df
+        #     st.markdown("### 📋 Group Summary (N)")
+        #     if not map_df_clean.empty and 'Group' in map_df_clean.columns:
+        #         group_counts = map_df_clean[map_df_clean['Group'] != 'Unknown'].groupby('Group')['Subject_ID'].nunique().reset_index()
+        #         if not group_counts.empty:
+        #             group_counts.columns = ['Experimental Group', 'Number of Unique Subjects (N)']
+        #             st.dataframe(group_counts, width='stretch', hide_index=True)
+
+        # --- DEBUGGING BLOCK ---
+        if 'mapping_df' in st.session_state:
+            with st.expander("🚨 Troubleshooting: Unmatched IDs & Missing Timepoints", expanded=True):
+                debug_df = st.session_state.mapping_df
+                
+                # Filter for the problem rows
+                unknown_groups = debug_df[debug_df['Group'] == 'Unknown']
+                missing_timepoints = debug_df[debug_df['Timepoint_Weeks'].isna()]
+                
+                col_d1, col_d2 = st.columns(2)
+                
+                with col_d1:
+                    st.markdown("#### ❌ Failed Group Match")
+                    st.caption("These IDs didn't contain any of your defined tags.")
+                    if unknown_groups.empty:
+                        st.success("All IDs successfully mapped to groups!")
+                    else:
+                        # Dropping duplicates so we only see the unique IDs that failed
+                        st.dataframe(unknown_groups[['Ids', 'Subject_ID']].drop_duplicates(), use_container_width=True, hide_index=True)
+                        
+                with col_d2:
+                    st.markdown("#### ⏱️ Failed Timepoint Extraction")
+                    st.caption("The regex could not find a valid week/time in these IDs.")
+                    if missing_timepoints.empty:
+                        st.success("All IDs have a valid timepoint!")
+                    else:
+                        st.dataframe(missing_timepoints[['Ids', 'Group']].drop_duplicates(), use_container_width=True, hide_index=True)
+        # -----------------------
 
     # --- TAB 4: LONGITUDINAL PLOTTING ---
     with tab4:
@@ -321,7 +384,9 @@ if uploaded_file:
             if not selected_plot_groups or not selected_plot_timepoints:
                 st.info("Please select at least one group and one timepoint to plot.")
             else:
-                mapping_df = st.session_state.mapping_df
+                mapping_df = st.session_state.mapping_df.copy()
+                if st.session_state.get('exclude_subjects_ui'):
+                    mapping_df = mapping_df[~mapping_df['Subject_ID'].isin(st.session_state.exclude_subjects_ui)]
                 
                 # Apply both Group and Timepoint filters!
                 mapping_filtered = mapping_df[
@@ -331,7 +396,84 @@ if uploaded_file:
                 
                 merged_df = pd.merge(df_to_plot[['Ids', plot_metric]], mapping_filtered, on='Ids')
                 merged_df[plot_metric] = pd.to_numeric(merged_df[plot_metric], errors='coerce')
-                merged_df = merged_df.dropna(subset=['Timepoint_Weeks', plot_metric])
+                # Drop rows where the Excel cell was literally empty/corrupted, but KEEP missing timepoint context
+                merged_df = merged_df.dropna(subset=[plot_metric])
+
+                # --- 🚨 MISSING DATA & IMPUTATION UI ---
+                st.markdown("### 🚑 Missing Data Report & Handling")
+                
+                expected_tps = sorted(selected_plot_timepoints)
+                subj_tps = merged_df.groupby(['Subject_ID', 'Group'])['Timepoint_Weeks'].agg(list).reset_index()
+                subj_tps['Missing_Timepoints'] = subj_tps['Timepoint_Weeks'].apply(lambda tps: [t for t in expected_tps if t not in tps])
+                
+                incomplete_subjs = subj_tps[subj_tps['Missing_Timepoints'].str.len() > 0]
+                
+                if not incomplete_subjs.empty:
+                    st.warning(f"**Action Required:** {len(incomplete_subjs)} subject(s) are missing data for the selected timepoints.")
+                    
+                    # Create a friendly display of who is missing what
+                    display_missing = incomplete_subjs.copy()
+                    display_missing['Missing_Timepoints'] = display_missing['Missing_Timepoints'].apply(lambda x: ", ".join(map(str, x)) + " Weeks")
+                    st.dataframe(display_missing[['Group', 'Subject_ID', 'Missing_Timepoints']].sort_values(['Group', 'Subject_ID']), hide_index=True)
+                    
+                    st.info("""
+                    **Why does this matter?** If animals missed later timepoints because of disease progression, simply dropping them will create 'Survivor Bias', making the sick group look artificially healthy.
+                    """)
+                    
+                    missing_handling = st.radio(
+                        "How would you like to handle subjects with missing timepoints?",
+                        options=[
+                            "Drop Incomplete Subjects (Standard ANOVA Complete-Case)", 
+                            "Last Observation Carried Forward (LOCF)",
+                            "Impute with Custom Value (e.g., 0 for speed)"
+                        ],
+                        key="missing_data_radio"
+                    )
+                    
+                    if missing_handling == "Drop Incomplete Subjects (Standard ANOVA Complete-Case)":
+                        complete_subjs = subj_tps[subj_tps['Missing_Timepoints'].str.len() == 0]['Subject_ID']
+                        merged_df = merged_df[merged_df['Subject_ID'].isin(complete_subjs)]
+                        st.write(f"*Proceeding with {len(complete_subjs)} complete subjects.*")
+                        
+                    elif missing_handling == "Last Observation Carried Forward (LOCF)":
+                        missing_rows = []
+                        for _, row in incomplete_subjs.iterrows():
+                            sub = row['Subject_ID']
+                            grp = row['Group']
+                            m_tps = row['Missing_Timepoints']
+                            
+                            sub_data = merged_df[merged_df['Subject_ID'] == sub]
+                            if sub_data.empty: continue
+                            
+                            # Calculate their mean performance for the weeks they DID do
+                            sub_agg = sub_data.groupby('Timepoint_Weeks')[plot_metric].mean().sort_index()
+                            
+                            for mtp in m_tps:
+                                # Find the last available timepoint BEFORE they got sick/went missing
+                                prev_tps = [t for t in sub_agg.index if t < mtp]
+                                locf_val = sub_agg.loc[max(prev_tps)] if prev_tps else sub_agg.iloc[0]
+                                
+                                # Create a new summary row for the missing week
+                                missing_rows.append({'Subject_ID': sub, 'Group': grp, 'Timepoint_Weeks': mtp, plot_metric: locf_val})
+                                
+                        if missing_rows:
+                            merged_df = pd.concat([merged_df, pd.DataFrame(missing_rows)], ignore_index=True)
+                        st.success("Applied LOCF. Missing later timepoints have been filled with the animal's last recorded mean performance.")
+                        
+                    elif missing_handling == "Impute with Custom Value (e.g., 0 for speed)":
+                        custom_val = st.number_input(f"Enter worst-case value for {plot_metric}:", value=0.0)
+                        
+                        missing_rows = []
+                        for _, row in incomplete_subjs.iterrows():
+                            for mtp in row['Missing_Timepoints']:
+                                missing_rows.append({'Subject_ID': row['Subject_ID'], 'Group': row['Group'], 'Timepoint_Weeks': mtp, plot_metric: custom_val})
+                                
+                        if missing_rows:
+                            merged_df = pd.concat([merged_df, pd.DataFrame(missing_rows)], ignore_index=True)
+                        st.success(f"Missing timepoints have been replaced with {custom_val}.")
+                else:
+                    st.success("All selected subjects have data for all selected timepoints! Proceeding with Complete-Case Analysis.")
+                # ---------------------------------------------------------
                 
                 if merged_df.empty:
                     st.warning("No valid data found for selected groups and metric.")
@@ -532,7 +674,9 @@ if uploaded_file:
                 elif len(selected_timepoints) < 2:
                     st.error("Please select at least 2 timepoints for the longitudinal analysis.")
                 else:
-                    mapping_df = st.session_state.mapping_df
+                    mapping_df = st.session_state.mapping_df.copy()
+                    if st.session_state.get('exclude_subjects_ui'):
+                        mapping_df = mapping_df[~mapping_df['Subject_ID'].isin(st.session_state.exclude_subjects_ui)]
                     mapping_stat = mapping_df[mapping_df['Group'].isin(selected_groups)]
                     
                     merged_stat_df = pd.merge(df_stats[['Ids', stat_metric]], mapping_stat, on='Ids')
@@ -543,17 +687,75 @@ if uploaded_file:
                     
                     agg_df = filtered_df.groupby(['Subject_ID', 'Group', 'Timepoint_Weeks'])[stat_metric].mean().reset_index()
                     
-                    expected_tp_count = len(selected_timepoints)
-                    subject_tp_counts = agg_df.groupby('Subject_ID')['Timepoint_Weeks'].nunique()
-                    complete_subjects = subject_tp_counts[subject_tp_counts == expected_tp_count].index
+                    # --- 🚨 MISSING DATA & IMPUTATION UI (TAB 5) ---
+                    expected_tps = sorted(selected_timepoints)
+                    subj_tps_agg = agg_df.groupby(['Subject_ID', 'Group'])['Timepoint_Weeks'].agg(list).reset_index()
+                    subj_tps_agg['Missing_Timepoints'] = subj_tps_agg['Timepoint_Weeks'].apply(lambda tps: [t for t in expected_tps if t not in tps])
                     
-                    final_df = agg_df[agg_df['Subject_ID'].isin(complete_subjects)]
+                    incomplete_subjs = subj_tps_agg[subj_tps_agg['Missing_Timepoints'].str.len() > 0]
                     
-                    subjects_kept = final_df['Subject_ID'].nunique()
-                    subjects_dropped = len(subject_tp_counts) - subjects_kept
+                    final_df = agg_df.copy() # Base dataframe to be modified based on user choice
+                    
+                    if not incomplete_subjs.empty:
+                        st.markdown("### 🚑 Missing Data Report & Handling (ANOVA)")
+                        st.warning(f"**Action Required:** {len(incomplete_subjs)} subject(s) are missing data for the selected timepoints.")
+                        
+                        display_missing = incomplete_subjs.copy()
+                        display_missing['Missing_Timepoints'] = display_missing['Missing_Timepoints'].apply(lambda x: ", ".join(map(str, x)) + " Weeks")
+                        st.dataframe(display_missing[['Group', 'Subject_ID', 'Missing_Timepoints']].sort_values(['Group', 'Subject_ID']), hide_index=True)
+                        
+                        missing_handling = st.radio(
+                            "How would you like to handle subjects with missing timepoints for the ANOVA?",
+                            options=[
+                                "Drop Incomplete Subjects (Standard ANOVA Complete-Case)", 
+                                "Last Observation Carried Forward (LOCF)",
+                                "Impute with Custom Value"
+                            ],
+                            key="missing_data_radio_tab5"
+                        )
+                        
+                        if missing_handling == "Drop Incomplete Subjects (Standard ANOVA Complete-Case)":
+                            complete_subjs = subj_tps_agg[subj_tps_agg['Missing_Timepoints'].str.len() == 0]['Subject_ID']
+                            final_df = final_df[final_df['Subject_ID'].isin(complete_subjs)]
+                            st.write(f"*Proceeding with {len(complete_subjs)} complete subjects.*")
+                            
+                        elif missing_handling == "Last Observation Carried Forward (LOCF)":
+                            missing_rows = []
+                            for _, row in incomplete_subjs.iterrows():
+                                sub = row['Subject_ID']
+                                grp = row['Group']
+                                
+                                sub_data = final_df[final_df['Subject_ID'] == sub]
+                                if sub_data.empty: continue
+                                
+                                sub_agg = sub_data.groupby('Timepoint_Weeks')[stat_metric].mean().sort_index()
+                                
+                                for mtp in row['Missing_Timepoints']:
+                                    prev_tps = [t for t in sub_agg.index if t < mtp]
+                                    locf_val = sub_agg.loc[max(prev_tps)] if prev_tps else sub_agg.iloc[0]
+                                    missing_rows.append({'Subject_ID': sub, 'Group': grp, 'Timepoint_Weeks': mtp, stat_metric: locf_val})
+                                    
+                            if missing_rows:
+                                final_df = pd.concat([final_df, pd.DataFrame(missing_rows)], ignore_index=True)
+                            st.success("Applied LOCF. Missing later timepoints have been filled with the animal's last recorded mean performance.")
+                            
+                        elif missing_handling == "Impute with Custom Value":
+                            custom_val = st.number_input(f"Enter worst-case value for {stat_metric}:", value=0.0, key="custom_val_tab5")
+                            missing_rows = []
+                            for _, row in incomplete_subjs.iterrows():
+                                for mtp in row['Missing_Timepoints']:
+                                    missing_rows.append({'Subject_ID': row['Subject_ID'], 'Group': row['Group'], 'Timepoint_Weeks': mtp, stat_metric: custom_val})
+                                    
+                            if missing_rows:
+                                final_df = pd.concat([final_df, pd.DataFrame(missing_rows)], ignore_index=True)
+                            st.success(f"Missing timepoints have been replaced with {custom_val}.")
+                    else:
+                        st.success("All selected subjects have data for all selected timepoints! Proceeding with Complete-Case Analysis.")
+                    
+                    # Update group sizes after imputation/dropping
                     group_sizes = final_df.groupby('Group')['Subject_ID'].nunique()
-                    
-                    st.info(f"Filtered for complete cases: Analyzing **{subjects_kept}** subjects. (Dropped {subjects_dropped} subjects missing data).")
+                    subjects_kept = final_df['Subject_ID'].nunique()
+                    # ---------------------------------------------------------
                     
                     st.markdown("#### 👥 Subjects Remaining Per Group:")
                     if not group_sizes.empty:
@@ -728,7 +930,9 @@ if uploaded_file:
                 elif not radar_groups:
                     st.error("Please select at least one group.")
                 else:
-                    mapping_df = st.session_state.mapping_df
+                    mapping_df = st.session_state.mapping_df.copy()
+                    if st.session_state.get('exclude_subjects_ui'):
+                        mapping_df = mapping_df[~mapping_df['Subject_ID'].isin(st.session_state.exclude_subjects_ui)]
                     mapping_radar = mapping_df[(mapping_df['Group'].isin(radar_groups)) & (mapping_df['Timepoint_Weeks'] == radar_tp)]
                     
                     if mapping_radar.empty:
