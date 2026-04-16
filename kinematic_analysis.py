@@ -5,6 +5,14 @@ import plotly.graph_objects as go
 import re
 import pingouin as pg
 import traceback
+import statsmodels.formula.api as smf
+
+# Suppress warnings
+
+# import warnings
+# from statsmodels.tools.sm_exceptions import ConvergenceWarning
+
+# warnings.simplefilter('ignore', ConvergenceWarning)
 
 # --- PLOTLY STATS FUNCTION (For Box Plots in Tab 5) ---
 def add_plotly_significance_brackets(fig, df, posthocs_df, x_col, y_col, text_color="black"):
@@ -321,7 +329,7 @@ if uploaded_file:
                         st.success("All IDs successfully mapped to groups!")
                     else:
                         # Dropping duplicates so we only see the unique IDs that failed
-                        st.dataframe(unknown_groups[['Ids', 'Subject_ID']].drop_duplicates(), use_container_width=True, hide_index=True)
+                        st.dataframe(unknown_groups[['Ids', 'Subject_ID']].drop_duplicates(), width='stretch', hide_index=True)
                         
                 with col_d2:
                     st.markdown("#### ⏱️ Failed Timepoint Extraction")
@@ -329,7 +337,7 @@ if uploaded_file:
                     if missing_timepoints.empty:
                         st.success("All IDs have a valid timepoint!")
                     else:
-                        st.dataframe(missing_timepoints[['Ids', 'Group']].drop_duplicates(), use_container_width=True, hide_index=True)
+                        st.dataframe(missing_timepoints[['Ids', 'Group']].drop_duplicates(), width='stretch', hide_index=True)
         # -----------------------
 
 # --- TAB 4: LONGITUDINAL ANALYSIS & STATS ---
@@ -339,13 +347,11 @@ if uploaded_file:
         if 'mapping_df' not in st.session_state:
             st.warning("⚠️ Please go to the 'Experimental Groups Setup' tab and extract variables first.")
         else:
-            # Apply the excluded subjects filter from Tab 3
             mapping_df = st.session_state.mapping_df.copy()
             if st.session_state.get('exclude_subjects_ui'):
                 mapping_df = mapping_df[~mapping_df['Subject_ID'].isin(st.session_state.exclude_subjects_ui)]
             
             # --- SECTION 1: DATA SELECTION ---
-            st.markdown("### 1. Data Selection")
             col1, col2 = st.columns(2)
             with col1:
                 plot_sheet = st.selectbox("Select Statistic (Sheet):", sheet_names, key="plot_sheet")
@@ -376,14 +382,11 @@ if uploaded_file:
                 )
 
             if len(selected_plot_groups) != 2:
-                st.error("🚨 Statistical significance on the plot requires exactly 2 groups selected.")
+                st.error("🚨 Statistical significance requires exactly 2 groups selected.")
             elif len(selected_plot_timepoints) < 2:
-                st.error("🚨 Repeated Measures ANOVA requires at least 2 timepoints selected.")
+                st.error("🚨 Longitudinal tests require at least 2 timepoints selected.")
             else:
-                # --- SECTION 2: MISSING DATA HANDLING ---
-                st.markdown("---")
-                st.markdown("### 2. Missing Data Report & Handling")
-                
+                # --- DATA PREPARATION (Strictly automated, no imputation UI) ---
                 mapping_filtered = mapping_df[
                     (mapping_df['Group'].isin(selected_plot_groups)) & 
                     (mapping_df['Timepoint_Weeks'].isin(selected_plot_timepoints))
@@ -392,84 +395,63 @@ if uploaded_file:
                 merged_raw = pd.merge(df_to_plot[['Ids', plot_metric]], mapping_filtered, on='Ids')
                 merged_raw[plot_metric] = pd.to_numeric(merged_raw[plot_metric], errors='coerce')
                 
-                # Drop rows where the Excel cell was literally empty/corrupted
-                merged_df = merged_raw.dropna(subset=[plot_metric])
+                # Drop rows where the metric cell is truly empty, then calculate a single mean per mouse per week
+                final_df = merged_raw.dropna(subset=[plot_metric]).groupby(['Subject_ID', 'Group', 'Timepoint_Weeks'])[plot_metric].mean().reset_index()
 
-                expected_tps = sorted(selected_plot_timepoints)
-                subj_tps = merged_df.groupby(['Subject_ID', 'Group'])['Timepoint_Weeks'].agg(list).reset_index()
-                subj_tps['Missing_Timepoints'] = subj_tps['Timepoint_Weeks'].apply(lambda tps: [t for t in expected_tps if t not in tps])
-                
-                incomplete_subjs = subj_tps[subj_tps['Missing_Timepoints'].str.len() > 0]
-                
-                if not incomplete_subjs.empty:
-                    st.warning(f"**Action Required:** {len(incomplete_subjs)} subject(s) are missing data for the selected timepoints.")
-                    
-                    display_missing = incomplete_subjs.copy()
-                    display_missing['Missing_Timepoints'] = display_missing['Missing_Timepoints'].apply(lambda x: ", ".join(map(str, x)) + " Weeks")
-                    st.dataframe(display_missing[['Group', 'Subject_ID', 'Missing_Timepoints']].sort_values(['Group', 'Subject_ID']), hide_index=True)
-                    
-                    st.info("If animals missed later timepoints because of disease progression, simply dropping them will create 'Survivor Bias'. Consider imputation.")
-                    
-                    missing_handling = st.radio(
-                        "How would you like to handle subjects with missing timepoints for the ANOVA?",
-                        options=[
-                            "Drop Incomplete Subjects (Standard ANOVA Complete-Case)", 
-                            "Last Observation Carried Forward (LOCF)",
-                            "Impute with Custom Value"
-                        ],
-                        key="missing_data_radio"
-                    )
-                    
-                    if missing_handling == "Drop Incomplete Subjects (Standard ANOVA Complete-Case)":
-                        complete_subjs = subj_tps[subj_tps['Missing_Timepoints'].str.len() == 0]['Subject_ID']
-                        merged_df = merged_df[merged_df['Subject_ID'].isin(complete_subjs)]
-                        st.write(f"*Proceeding with {len(complete_subjs)} complete subjects.*")
-                        
-                    elif missing_handling == "Last Observation Carried Forward (LOCF)":
-                        missing_rows = []
-                        for _, row in incomplete_subjs.iterrows():
-                            sub = row['Subject_ID']
-                            grp = row['Group']
-                            
-                            sub_data = merged_df[merged_df['Subject_ID'] == sub]
-                            if sub_data.empty: continue
-                            
-                            sub_agg = sub_data.groupby('Timepoint_Weeks')[plot_metric].mean().sort_index()
-                            
-                            for mtp in row['Missing_Timepoints']:
-                                prev_tps = [t for t in sub_agg.index if t < mtp]
-                                locf_val = sub_agg.loc[max(prev_tps)] if prev_tps else sub_agg.iloc[0]
-                                missing_rows.append({'Subject_ID': sub, 'Group': grp, 'Timepoint_Weeks': mtp, plot_metric: locf_val})
-                                
-                        if missing_rows:
-                            merged_df = pd.concat([merged_df, pd.DataFrame(missing_rows)], ignore_index=True)
-                        st.success("Applied LOCF. Missing later timepoints have been filled with the animal's last recorded mean performance.")
-                        
-                    elif missing_handling == "Impute with Custom Value":
-                        custom_val = st.number_input(f"Enter worst-case value for {plot_metric}:", value=0.0, key="custom_val")
-                        missing_rows = []
-                        for _, row in incomplete_subjs.iterrows():
-                            for mtp in row['Missing_Timepoints']:
-                                missing_rows.append({'Subject_ID': row['Subject_ID'], 'Group': row['Group'], 'Timepoint_Weeks': mtp, plot_metric: custom_val})
-                                
-                        if missing_rows:
-                            merged_df = pd.concat([merged_df, pd.DataFrame(missing_rows)], ignore_index=True)
-                        st.success(f"Missing timepoints have been replaced with {custom_val}.")
-                else:
-                    st.success("All selected subjects have data for all selected timepoints! Proceeding with Complete-Case Analysis.")
 
-                # Final Aggregation (Collapse trials into 1 mean per mouse per week to run the ANOVA properly)
-                final_df = merged_df.groupby(['Subject_ID', 'Group', 'Timepoint_Weeks'])[plot_metric].mean().reset_index()
+                # --- SMART STATS ENGINE (Collapsible) ---
+                with st.expander("📊 Statistical Tables & Assumptions (Click to Expand)", expanded=False):
+                    
+                    # 1. Check Normality (Shapiro-Wilk)
+                    norm_test = pg.normality(data=final_df, dv=plot_metric, group='Group')
+                    is_normal = norm_test['normal'].all() if not norm_test.empty else True
+                    
+                    # 2. Check Balance (Missing Data)
+                    expected_tps = len(selected_plot_timepoints)
+                    subj_tps = final_df.groupby('Subject_ID')['Timepoint_Weeks'].nunique()
+                    is_balanced = (subj_tps == expected_tps).all()
 
-                # --- SECTION 3: STATISTICAL ANALYSIS ---
-                st.markdown("---")
-                st.markdown("### 3. Statistical Analysis (2-Way Mixed ANOVA)")
-                display_posthocs = None
-                
-                group_sizes = final_df.groupby('Group')['Subject_ID'].nunique()
-                if (group_sizes < 2).any():
-                    st.error("🚨 ANOVA FAILED: At least one group has fewer than 2 complete subjects.")
-                else:
+                    # --- NEW: DYNAMIC PIPELINE ANNOUNCER ---
+                    st.markdown("### 1. Model Assumptions & Pipeline Selection")
+                    
+                    col_chk1, col_chk2 = st.columns(2)
+                    with col_chk1:
+                        if is_normal:
+                            st.success("✔️ **Normality (Shapiro-Wilk):** Passed")
+                        else:
+                            st.error("⚠️ **Normality (Shapiro-Wilk):** Violated (Skewed)")
+                    with col_chk2:
+                        if is_balanced:
+                            st.success("✔️ **Design Balance:** Passed (No missing data)")
+                        else:
+                            st.error("⚠️ **Design Balance:** Violated (Missing timepoints)")
+
+                    st.markdown("---")
+                    
+                    # Explain exactly what the engine is doing based on the checks
+                    if is_normal and is_balanced:
+                        st.info("""
+                        🚀 **Active Pipeline: A (2-Way Mixed-Design ANOVA)**
+                        * **Why?** Your data is normally distributed and perfectly balanced.
+                        * **What's happening?** The engine is running a standard Parametric ANOVA. Post-hocs are pairwise simple main effects with a Holm-Bonferroni correction.
+                        """)
+                    elif is_normal and not is_balanced:
+                        st.warning("""
+                        🚀 **Active Pipeline: B (Linear Mixed-Effects Model)**
+                        * **Why?** Your data is normal, but mice are missing timepoints.
+                        * **What's happening?** A standard ANOVA would delete subjects missing later timepoints, causing 'Survivor Bias'. The engine upgraded to an LMM to safely utilize all available data points. Post-hocs are cross-sectional Welch's T-Tests (Holm-corrected).
+                        """)
+                    else:
+                        st.error("""
+                        🚀 **Active Pipeline: C (Non-Parametric Analysis)**
+                        * **Why?** Your data violates normality assumptions.
+                        * **What's happening?** Running an ANOVA on highly skewed data produces invalid p-values. The engine safely fell back to robust, rank-based Mann-Whitney U tests evaluated cross-sectionally (Holm-corrected).
+                        """)
+                    
+
+                    st.markdown("### 2. Results")
+                    display_posthocs = pd.DataFrame()
+                    
                     def format_pval(x):
                         if pd.isna(x): return x
                         try:
@@ -478,43 +460,73 @@ if uploaded_file:
                         except:
                             return x
 
-                    try:
-                        anova_results = pg.mixed_anova(
-                            dv=plot_metric, 
-                            within='Timepoint_Weeks', 
-                            between='Group', 
-                            subject='Subject_ID', 
-                            data=final_df
-                        )
-                        for col in ['p-unc', 'p_unc', 'p-val', 'p_val', 'p-GG-corr', 'p_GG_corr']:
-                            if col in anova_results.columns:
-                                anova_results[col] = anova_results[col].apply(format_pval)
-                                
-                        st.markdown("**ANOVA Main Effects & Interactions**")
-                        st.dataframe(anova_results, width='stretch', hide_index=True)
-                        
-                        # Post-Hocs
-                        posthocs = pg.pairwise_tests(
-                            dv=plot_metric, within='Timepoint_Weeks', between='Group', 
-                            subject='Subject_ID', data=final_df, padjust='holm'
-                        )
-                        display_posthocs = posthocs[posthocs['Contrast'] == 'Timepoint_Weeks * Group'].copy()
-                        
-                        if not display_posthocs.empty:
-                            p_cols = [c for c in display_posthocs.columns if 'p-' in c.lower() or 'p_' in c.lower() or c.lower() == 'pval' or c.lower() == 'p']
-                            for col in p_cols:
-                                display_posthocs[col] = display_posthocs[col].apply(format_pval)
+                    # --- DECISION TREE ---
+                    if is_normal and is_balanced:
+                        # STANDARD PARAMETRIC
+                        try:
+                            anova_res = pg.mixed_anova(dv=plot_metric, within='Timepoint_Weeks', between='Group', subject='Subject_ID', data=final_df)
+                            st.markdown("**2-Way Mixed ANOVA**")
+                            for col in ['p_unc', 'p_unc', 'p_val', 'p_GG_corr']:
+                                if col in anova_res.columns: anova_res[col] = anova_res[col].apply(format_pval)
+                            st.dataframe(anova_res, width='stretch', hide_index=True)
                             
-                            st.markdown("**Multiple Comparisons (Interaction Post-Hoc)**")
-                            st.dataframe(display_posthocs, width='stretch', hide_index=True)
-                            
-                    except Exception as e:
-                        st.error(f"Statistical calculation failed. Check standard deviations (ensure data isn't perfectly identical). Error: {e}")
+                            post_res = pg.pairwise_tests(dv=plot_metric, within='Timepoint_Weeks', between='Group', subject='Subject_ID', data=final_df, padjust='holm')
+                            display_posthocs = post_res[post_res['Contrast'] == 'Timepoint_Weeks * Group'].copy()
+                        except Exception as e:
+                            st.error(f"ANOVA Failed: {e}")
 
-                # --- SECTION 4: PLOTTING ---
-                st.markdown("---")
-                st.markdown("### 4. Visualization")
-                
+                    elif is_normal and not is_balanced:
+                        # LMM FOR MISSING DATA
+                        final_df['_metric_'] = final_df[plot_metric].astype(float)
+                        final_df['_time_'] = final_df['Timepoint_Weeks'].astype(str)
+                        final_df['_group_'] = final_df['Group'].astype(str)
+                        
+                        try:
+                            md = smf.mixedlm("_metric_ ~ _time_ * _group_", final_df, groups=final_df["Subject_ID"])
+                            mdf = md.fit(method='cg')
+                            st.markdown("**Linear Mixed-Effects Model (LMM)** *(Best for missing data)*")
+                            st.dataframe(mdf.summary().tables[1], width='stretch')
+                        except Exception as e:
+                            st.error(f"LMM Failed to converge: {e}")
+
+                        # Pairwise Parametric
+                        st.markdown("**Pairwise T-Tests (Holm-Corrected for FDR)**")
+                        rows = []
+                        for tp in selected_plot_timepoints:
+                            tp_df = final_df[final_df['Timepoint_Weeks'] == tp]
+                            g1 = tp_df[tp_df['Group'] == selected_plot_groups[0]][plot_metric]
+                            g2 = tp_df[tp_df['Group'] == selected_plot_groups[1]][plot_metric]
+                            if len(g1) > 1 and len(g2) > 1:
+                                res = pg.ttest(g1, g2)
+                                rows.append({'Timepoint_Weeks': tp, 'Group A': selected_plot_groups[0], 'Group B': selected_plot_groups[1], 'p_unc': res['p_val'].values[0]})
+                        if rows:
+                            display_posthocs = pd.DataFrame(rows)
+                            _, p_corr = pg.multicomp(display_posthocs['p_unc'].values, method='holm')
+                            display_posthocs['p_corr'] = p_corr
+
+                    else:
+                        # NON-PARAMETRIC
+                        st.markdown("**Non-Parametric Pairwise Tests (Mann-Whitney U)**")
+                        rows = []
+                        for tp in selected_plot_timepoints:
+                            tp_df = final_df[final_df['Timepoint_Weeks'] == tp]
+                            g1 = tp_df[tp_df['Group'] == selected_plot_groups[0]][plot_metric]
+                            g2 = tp_df[tp_df['Group'] == selected_plot_groups[1]][plot_metric]
+                            if len(g1) > 1 and len(g2) > 1:
+                                res = pg.mwu(g1, g2)
+                                rows.append({'Timepoint_Weeks': tp, 'Group A': selected_plot_groups[0], 'Group B': selected_plot_groups[1], 'p_unc': res['p_val'].values[0]})
+                        if rows:
+                            display_posthocs = pd.DataFrame(rows)
+                            _, p_corr = pg.multicomp(display_posthocs['p_unc'].values, method='holm')
+                            display_posthocs['p_corr'] = p_corr
+
+                    if not display_posthocs.empty:
+                        df_show = display_posthocs.copy()
+                        for col in ['p_unc', 'p_corr']:
+                            if col in df_show.columns: df_show[col] = df_show[col].apply(format_pval)
+                        st.dataframe(df_show, width='stretch', hide_index=True)
+
+                # --- SECTION 3: VISUALIZATION ---
                 col_p1, col_p2, col_p3 = st.columns(3)
                 with col_p1:
                     plot_format = st.selectbox("Plot Format:", ["Line Plot", "Bar Plot", "Box Plot", "Violin Plot"])
@@ -526,9 +538,9 @@ if uploaded_file:
                 with col_p3:
                     show_pvals_on_line = st.checkbox("Draw significance asterisks on plot", value=True)
 
-                summary_df = merged_df.groupby(['Group', 'Timepoint_Weeks'])[plot_metric].agg(['mean', 'sem']).reset_index()
+                summary_df = final_df.groupby(['Group', 'Timepoint_Weeks'])[plot_metric].agg(['mean', 'sem']).reset_index()
                 summary_df = summary_df.rename(columns={'mean': plot_metric, 'sem': 'SEM'}).sort_values(by='Timepoint_Weeks')
-                title_text = f"Longitudinal Progression for {plot_sheet} values of {plot_metric}"
+                title_text = f"Longitudinal Progression of {plot_metric}"
 
                 if plot_format == "Line Plot":
                     fig = px.line(summary_df, x='Timepoint_Weeks', y=plot_metric, color='Group', markers=True,
@@ -539,57 +551,50 @@ if uploaded_file:
                                  error_y='SEM' if show_error_bars else None, title=title_text,
                                  labels={'Timepoint_Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map)
                 elif plot_format == "Box Plot":
-                    fig = px.box(merged_df, x='Timepoint_Weeks', y=plot_metric, color='Group',
+                    fig = px.box(final_df, x='Timepoint_Weeks', y=plot_metric, color='Group',
                                  points="all" if show_points else False, title=title_text,
                                  labels={'Timepoint_Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map)
                 elif plot_format == "Violin Plot":
-                    fig = px.violin(merged_df, x='Timepoint_Weeks', y=plot_metric, color='Group', box=True,
+                    fig = px.violin(final_df, x='Timepoint_Weeks', y=plot_metric, color='Group', box=True,
                                     points="all" if show_points else False, title=title_text,
                                     labels={'Timepoint_Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map)
 
-                # Fix Plotly X-Axis spacing for numbers
+                # Fix Plotly X-Axis spacing
                 try:
-                    dtick_val = sorted(merged_df['Timepoint_Weeks'].unique())[1] - sorted(merged_df['Timepoint_Weeks'].unique())[0] if len(merged_df['Timepoint_Weeks'].unique()) > 1 else 1
+                    dtick_val = sorted(final_df['Timepoint_Weeks'].unique())[1] - sorted(final_df['Timepoint_Weeks'].unique())[0] if len(final_df['Timepoint_Weeks'].unique()) > 1 else 1
                     fig.update_layout(xaxis=dict(type='linear', dtick=dtick_val))
                 except:
                     fig.update_layout(xaxis=dict(type='category'))
 
-                # --- Draw Asterisks from the True Post-Hoc DataFrame ---
+                # --- Draw Asterisks from the Auto-Engine ---
                 if show_pvals_on_line and display_posthocs is not None and not display_posthocs.empty:
                     if plot_format in ["Box Plot", "Violin Plot"]:
-                        # Use your custom bracket drawing function for grouped distributions
                         fig = add_plotly_significance_brackets(
-                            fig=fig, df=merged_df, posthocs_df=display_posthocs, 
+                            fig=fig, df=final_df, posthocs_df=display_posthocs, 
                             x_col='Timepoint_Weeks', y_col=plot_metric, text_color=annotation_color
                         )
                     else:
-                        # Logic for Line/Bar plots (floating asterisk above the highest point)
-                        y_max_overall = merged_df[plot_metric].max()
-                        y_min_overall = merged_df[plot_metric].min()
+                        y_max_overall = final_df[plot_metric].max()
+                        y_min_overall = final_df[plot_metric].min()
                         offset = (y_max_overall - y_min_overall) * 0.08 if y_max_overall != y_min_overall else (y_max_overall * 0.05)
 
-                        valid_p_cols = ['p-unc', 'p_unc', 'p-cor', 'p_cor', 'p-corr', 'p_corr', 'p-val', 'p_val', 'pval', 'p']
+                        valid_p_cols = ['p_corr', 'p_corr', 'p_unc', 'p_unc', 'p_val', 'pval', 'p']
                         p_col = next((c for c in display_posthocs.columns if c.lower() in valid_p_cols), None)
 
                         if p_col:
                             for _, row in display_posthocs.iterrows():
                                 tp = row['Timepoint_Weeks']
                                 raw_pval = str(row[p_col]).replace('<', '').replace('>', '').replace('=', '').strip()
-                                
                                 try:
                                     pval = float(raw_pval)
                                     if pval < 0.001: star = "***"
                                     elif pval < 0.01: star = "**"
                                     elif pval < 0.05: star = "*"
-                                    else: continue # Don't draw 'ns' on line plots to keep it clean
+                                    else: continue 
                                     
-                                    # Find highest point to place asterisk
                                     tp_df = summary_df[summary_df['Timepoint_Weeks'].astype(str) == str(tp)]
                                     if tp_df.empty: continue
-                                    if show_error_bars:
-                                        y_highest_tp = (tp_df[plot_metric] + tp_df['SEM']).max()
-                                    else:
-                                        y_highest_tp = tp_df[plot_metric].max()
+                                    y_highest_tp = (tp_df[plot_metric] + tp_df['SEM']).max() if show_error_bars else tp_df[plot_metric].max()
 
                                     fig.add_annotation(
                                         x=tp, y=y_highest_tp + offset, text=star, showarrow=False,
@@ -598,7 +603,7 @@ if uploaded_file:
                                 except ValueError:
                                     pass
 
-                fig.update_layout(margin=dict(t=60))
+                fig.update_layout(margin=dict(t=30))
                 st.plotly_chart(fig, width='stretch')
 
     # --- TAB 5: RADAR PLOTS ---
