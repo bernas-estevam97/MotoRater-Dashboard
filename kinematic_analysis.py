@@ -9,10 +9,10 @@ import statsmodels.formula.api as smf
 
 # Suppress warnings
 
-# import warnings
-# from statsmodels.tools.sm_exceptions import ConvergenceWarning
+import warnings
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
-# warnings.simplefilter('ignore', ConvergenceWarning)
+warnings.simplefilter('ignore', ConvergenceWarning)
 
 # --- PLOTLY STATS FUNCTION (For Box Plots in Tab 5) ---
 def add_plotly_significance_brackets(fig, df, posthocs_df, x_col, y_col, text_color="black"):
@@ -420,11 +420,28 @@ if uploaded_file:
                             st.success("✔️ **Normality (Shapiro-Wilk):** Passed")
                         else:
                             st.error("⚠️ **Normality (Shapiro-Wilk):** Violated (Skewed)")
+                            
                     with col_chk2:
                         if is_balanced:
                             st.success("✔️ **Design Balance:** Passed (No missing data)")
                         else:
                             st.error("⚠️ **Design Balance:** Violated (Missing timepoints)")
+                            
+                            # --- NEW: Explicitly show which IDs are missing timepoints ---
+                            expected_tps_list = sorted(selected_plot_timepoints)
+                            subj_tps_list = final_df.groupby(['Subject_ID', 'Group'])['Timepoint_Weeks'].agg(list).reset_index()
+                            subj_tps_list['Missing_Timepoints'] = subj_tps_list['Timepoint_Weeks'].apply(lambda tps: [t for t in expected_tps_list if t not in tps])
+                            
+                            incomplete_subjs = subj_tps_list[subj_tps_list['Missing_Timepoints'].str.len() > 0].copy()
+                            
+                            if not incomplete_subjs.empty:
+                                incomplete_subjs['Missing_Timepoints'] = incomplete_subjs['Missing_Timepoints'].apply(lambda x: ", ".join(map(str, x)) + " Weeks")
+                                st.dataframe(
+                                    incomplete_subjs[['Group', 'Subject_ID', 'Missing_Timepoints']].sort_values(['Group', 'Subject_ID']), 
+                                    hide_index=True, 
+                                    width='stretch'
+                                )
+                            # -------------------------------------------------------------
 
                     st.markdown("---")
                     
