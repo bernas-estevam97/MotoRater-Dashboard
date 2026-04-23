@@ -6,6 +6,7 @@ import re
 import pingouin as pg
 import traceback
 import statsmodels.formula.api as smf
+import statsmodels.api as sm
 
 # Suppress warnings
 
@@ -387,6 +388,7 @@ if uploaded_file:
                 st.error("🚨 Longitudinal tests require at least 2 timepoints selected.")
             else:
                 # --- DATA PREPARATION (Strictly automated, no imputation UI) ---
+                # --- DATA PREPARATION (Strictly automated, no imputation UI) ---
                 mapping_filtered = mapping_df[
                     (mapping_df['Group'].isin(selected_plot_groups)) & 
                     (mapping_df['Timepoint_Weeks'].isin(selected_plot_timepoints))
@@ -398,28 +400,38 @@ if uploaded_file:
                 # Drop rows where the metric cell is truly empty, then calculate a single mean per mouse per week
                 final_df = merged_raw.dropna(subset=[plot_metric]).groupby(['Subject_ID', 'Group', 'Timepoint_Weeks'])[plot_metric].mean().reset_index()
 
+                # Pre-format columns for statsmodels to avoid spaces/special character errors
+                final_df['_metric_'] = final_df[plot_metric].astype(float)
+                final_df['_time_'] = final_df['Timepoint_Weeks'].astype(str)
+                final_df['_group_'] = final_df['Group'].astype(str)
 
                 # --- SMART STATS ENGINE (Collapsible) ---
                 with st.expander("📊 Statistical Tables & Assumptions (Click to Expand)", expanded=False):
                     
-                    # 1. Check Normality (Shapiro-Wilk)
-                    norm_test = pg.normality(data=final_df, dv=plot_metric, group='Group')
-                    is_normal = norm_test['normal'].all() if not norm_test.empty else True
+                    # 1. OPTION B: Check Normality of Model Residuals (The Gold Standard)
+                    # We fit a quick baseline Ordinary Least Squares (OLS) model to get the residuals.
+                    # C() explicitly tells statsmodels these are categorical factors.
+                    base_model = smf.ols("_metric_ ~ C(_time_) * C(_group_)", data=final_df).fit()
+                    residuals = base_model.resid
+                    
+                    norm_test = pg.normality(residuals)
+                    # If p > 0.05, the residuals are normally distributed
+                    is_normal = norm_test['normal'].iloc[0] if not norm_test.empty else True
                     
                     # 2. Check Balance (Missing Data)
                     expected_tps = len(selected_plot_timepoints)
                     subj_tps = final_df.groupby('Subject_ID')['Timepoint_Weeks'].nunique()
                     is_balanced = (subj_tps == expected_tps).all()
 
-                    # --- NEW: DYNAMIC PIPELINE ANNOUNCER ---
+                    # --- DYNAMIC PIPELINE ANNOUNCER ---
                     st.markdown("### 1. Model Assumptions & Pipeline Selection")
                     
                     col_chk1, col_chk2 = st.columns(2)
                     with col_chk1:
                         if is_normal:
-                            st.success("✔️ **Normality (Shapiro-Wilk):** Passed")
+                            st.success("✔️ **Residual Normality (Shapiro-Wilk):** Passed")
                         else:
-                            st.error("⚠️ **Normality (Shapiro-Wilk):** Violated (Skewed)")
+                            st.error("⚠️ **Residual Normality (Shapiro-Wilk):** Violated (Skewed)")
                             
                     with col_chk2:
                         if is_balanced:
@@ -427,59 +439,41 @@ if uploaded_file:
                         else:
                             st.error("⚠️ **Design Balance:** Violated (Missing timepoints)")
                             
-                            # --- NEW: Explicitly show which IDs are missing timepoints ---
                             expected_tps_list = sorted(selected_plot_timepoints)
                             subj_tps_list = final_df.groupby(['Subject_ID', 'Group'])['Timepoint_Weeks'].agg(list).reset_index()
                             subj_tps_list['Missing_Timepoints'] = subj_tps_list['Timepoint_Weeks'].apply(lambda tps: [t for t in expected_tps_list if t not in tps])
-                            
                             incomplete_subjs = subj_tps_list[subj_tps_list['Missing_Timepoints'].str.len() > 0].copy()
                             
                             if not incomplete_subjs.empty:
                                 incomplete_subjs['Missing_Timepoints'] = incomplete_subjs['Missing_Timepoints'].apply(lambda x: ", ".join(map(str, x)) + " Weeks")
                                 st.dataframe(
                                     incomplete_subjs[['Group', 'Subject_ID', 'Missing_Timepoints']].sort_values(['Group', 'Subject_ID']), 
-                                    hide_index=True, 
-                                    width='stretch'
+                                    hide_index=True, width='stretch'
                                 )
-                            # -------------------------------------------------------------
 
                     st.markdown("---")
                     
-                    # Explain exactly what the engine is doing based on the checks
                     if is_normal and is_balanced:
-                        st.info("""
-                        🚀 **Active Pipeline: A (2-Way Mixed-Design ANOVA)**
-                        * **Why?** Your data is normally distributed and perfectly balanced.
-                        * **What's happening?** The engine is running a standard Parametric ANOVA. Post-hocs are pairwise simple main effects with a Holm-Bonferroni correction.
-                        """)
+                        st.info("🚀 **Active Pipeline: A (2-Way Mixed-Design ANOVA)**\n* **Why?** Data residuals are normal and design is perfectly balanced.")
                     elif is_normal and not is_balanced:
-                        st.warning("""
-                        🚀 **Active Pipeline: B (Linear Mixed-Effects Model)**
-                        * **Why?** Your data is normal, but mice are missing timepoints.
-                        * **What's happening?** A standard ANOVA would delete subjects missing later timepoints, causing 'Survivor Bias'. The engine upgraded to an LMM to safely utilize all available data points. Post-hocs are cross-sectional Welch's T-Tests (Holm-corrected).
-                        """)
+                        st.warning("🚀 **Active Pipeline: B (Linear Mixed-Effects Model)**\n* **Why?** Data residuals are normal, but missing timepoints required an upgrade to LMM to prevent survivor bias.")
                     else:
-                        st.error("""
-                        🚀 **Active Pipeline: C (Non-Parametric Analysis)**
-                        * **Why?** Your data violates normality assumptions.
-                        * **What's happening?** Running an ANOVA on highly skewed data produces invalid p-values. The engine safely fell back to robust, rank-based Mann-Whitney U tests evaluated cross-sectionally (Holm-corrected).
-                        """)
-                    
+                        st.error("🚀 **Active Pipeline: C (Generalized Estimating Equations - GEE)**\n* **Why?** Data residuals violate normality.\n* **What's happening?** The engine upgraded to a robust GEE model. It safely handles skewed data while preserving the longitudinal structure of repeated measures.")
 
                     st.markdown("### 2. Results")
                     display_posthocs = pd.DataFrame()
                     
                     def format_pval(x):
-                        if pd.isna(x): return x
+                        if pd.isna(x): return "NaN" # Force NaN to be a string
                         try:
                             val = float(x)
                             return f"{val:.4f}" if val > 0.0001 else "<0.0001"
                         except:
-                            return x
+                            return str(x) # Force any other weird output to string
 
                     # --- DECISION TREE ---
                     if is_normal and is_balanced:
-                        # STANDARD PARAMETRIC
+                        # [Keep your existing Pipeline A code here]
                         try:
                             anova_res = pg.mixed_anova(dv=plot_metric, within='Timepoint_Weeks', between='Group', subject='Subject_ID', data=final_df)
                             st.markdown("**2-Way Mixed ANOVA**")
@@ -493,20 +487,20 @@ if uploaded_file:
                             st.error(f"ANOVA Failed: {e}")
 
                     elif is_normal and not is_balanced:
-                        # LMM FOR MISSING DATA
-                        final_df['_metric_'] = final_df[plot_metric].astype(float)
-                        final_df['_time_'] = final_df['Timepoint_Weeks'].astype(str)
-                        final_df['_group_'] = final_df['Group'].astype(str)
-                        
+                        # [Keep your existing Pipeline B code here]
                         try:
-                            md = smf.mixedlm("_metric_ ~ _time_ * _group_", final_df, groups=final_df["Subject_ID"])
+                            md = smf.mixedlm("_metric_ ~ C(_time_) * C(_group_)", final_df, groups=final_df["Subject_ID"])
                             mdf = md.fit(method='cg')
                             st.markdown("**Linear Mixed-Effects Model (LMM)** *(Best for missing data)*")
-                            st.dataframe(mdf.summary().tables[1], width='stretch')
+                            
+                            # Extract data to standard Pandas DataFrame
+                            sm_table = mdf.summary().tables[1]
+                            df_lmm = pd.DataFrame(sm_table.data[1:], columns=sm_table.data[0])
+                            
+                            st.dataframe(df_lmm, width='stretch')
                         except Exception as e:
                             st.error(f"LMM Failed to converge: {e}")
 
-                        # Pairwise Parametric
                         st.markdown("**Pairwise T-Tests (Holm-Corrected for FDR)**")
                         rows = []
                         for tp in selected_plot_timepoints:
@@ -522,20 +516,64 @@ if uploaded_file:
                             display_posthocs['p_corr'] = p_corr
 
                     else:
-                        # NON-PARAMETRIC
-                        st.markdown("**Non-Parametric Pairwise Tests (Mann-Whitney U)**")
-                        rows = []
-                        for tp in selected_plot_timepoints:
-                            tp_df = final_df[final_df['Timepoint_Weeks'] == tp]
-                            g1 = tp_df[tp_df['Group'] == selected_plot_groups[0]][plot_metric]
-                            g2 = tp_df[tp_df['Group'] == selected_plot_groups[1]][plot_metric]
-                            if len(g1) > 1 and len(g2) > 1:
-                                res = pg.mwu(g1, g2)
-                                rows.append({'Timepoint_Weeks': tp, 'Group A': selected_plot_groups[0], 'Group B': selected_plot_groups[1], 'p_unc': res['p_val'].values[0]})
-                        if rows:
-                            display_posthocs = pd.DataFrame(rows)
-                            _, p_corr = pg.multicomp(display_posthocs['p_unc'].values, method='holm')
-                            display_posthocs['p_corr'] = p_corr
+                        # --- NEW PIPELINE C: GEE ---
+                        st.markdown("**Generalized Estimating Equations (GEE)**")
+                        try:
+                            cov_struct = sm.cov_struct.Exchangeable()
+                            fam = sm.families.Gaussian() 
+                            
+                            md = smf.gee("_metric_ ~ C(_time_) * C(_group_)", 
+                                         groups=final_df["Subject_ID"], 
+                                         data=final_df, 
+                                         cov_struct=cov_struct, 
+                                         family=fam)
+                            mdf = md.fit()
+                            
+                            # Extract data to standard Pandas DataFrame
+                            sm_table = mdf.summary().tables[1]
+                            df_gee = pd.DataFrame(sm_table.data[1:], columns=sm_table.data[0])
+                            
+                            st.dataframe(df_gee, width='stretch')
+                            
+                            
+                            # --- Extract GEE Post-Hoc Contrasts for Asterisks ---
+                            st.markdown("**GEE Pairwise Contrasts (Group A vs B per Timepoint, Holm-Corrected)**")
+                            
+                            # Identify statsmodels reference levels (alphabetical by default)
+                            groups_sorted = sorted(final_df['_group_'].unique())
+                            ref_group = groups_sorted[0]
+                            test_group = groups_sorted[1]
+                            
+                            tps_sorted = sorted(final_df['_time_'].unique())
+                            ref_time = tps_sorted[0]
+                            
+                            rows = []
+                            for tp in selected_plot_timepoints:
+                                tp_str = str(tp)
+                                
+                                # Construct the hypothesis test string for statsmodels
+                                if tp_str == ref_time:
+                                    hypothesis = f"C(_group_)[T.{test_group}] = 0"
+                                else:
+                                    hypothesis = f"C(_group_)[T.{test_group}] + C(_time_)[T.{tp_str}]:C(_group_)[T.{test_group}] = 0"
+                                
+                                contrast_res = mdf.t_test(hypothesis)
+                                p_val = float(contrast_res.pvalue)
+                                
+                                rows.append({
+                                    'Timepoint_Weeks': tp, 
+                                    'Group A': ref_group, 
+                                    'Group B': test_group, 
+                                    'p_unc': p_val
+                                })
+                                
+                            if rows:
+                                display_posthocs = pd.DataFrame(rows)
+                                _, p_corr = pg.multicomp(display_posthocs['p_unc'].values, method='holm')
+                                display_posthocs['p_corr'] = p_corr
+                                
+                        except Exception as e:
+                            st.error(f"GEE Failed: {e}")
 
                     if not display_posthocs.empty:
                         df_show = display_posthocs.copy()
