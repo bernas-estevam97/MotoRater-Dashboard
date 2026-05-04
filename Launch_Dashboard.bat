@@ -9,6 +9,9 @@ REM    MOTO-RATER DASHBOARD LAUNCHER
 REM ==========================================
 
 REM --- Configuration ---
+set "GITHUB_ZIP_URL=https://github.com/bernas-estevam97/MotoRater-Dashboard/archive/refs/heads/dev.zip"
+set "GITHUB_EXTRACT_FOLDER=MotoRater-Dashboard-dev"
+
 set "PYTHON_URL=https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip"
 set "PIP_URL=https://bootstrap.pypa.io/get-pip.py"
 set "TOTAL_STEPS=10" 
@@ -31,7 +34,7 @@ if %errorlevel% neq 0 ( echo [ERROR] 'curl' is required but missing. Windows 10+
 where tar >nul 2>nul
 if %errorlevel% neq 0 ( echo [ERROR] 'tar' is required but missing. Windows 10+ is needed. & pause & exit /b )
 
-REM --- 1. SMART CHECK: Is it already installed? ---
+REM --- 1. SMART CHECK: Is Python already installed? ---
 if exist "%MARKER_FILE%" (
     REM === FAST LANE ===
     cls
@@ -42,8 +45,7 @@ if exist "%MARKER_FILE%" (
     echo [System] Portable environment loaded.
     echo [System] Dependencies verified.
     echo.
-    echo Launching App...
-    goto :launch
+    goto :check_app_files
 )
 
 REM === SLOW LANE (First Run Only) ===
@@ -134,6 +136,27 @@ echo ==================================================
 echo [##########] 100%% - Installation Complete
 echo ==================================================
 echo.
+
+:check_app_files
+REM --- SELF-HEALING: Check if app files exist, download if missing ---
+if not exist "main.py" (
+    echo [System] App source code missing. Fetching from GitHub...
+    curl -L -o app_code.zip "%GITHUB_ZIP_URL%" --silent
+    if exist app_code.zip (
+        tar -xf app_code.zip
+        if exist "%GITHUB_EXTRACT_FOLDER%" (
+            xcopy /s /y /q "%GITHUB_EXTRACT_FOLDER%\*" . >nul
+            rmdir /s /q "%GITHUB_EXTRACT_FOLDER%"
+        )
+        del app_code.zip
+        echo [System] App code successfully downloaded.
+    ) else (
+        echo [ERROR] Failed to download app files. Please check your internet connection.
+        pause
+        exit /b
+    )
+)
+
 echo Launching MotoRater Dashboard...
 timeout /t 2 >nul
 
