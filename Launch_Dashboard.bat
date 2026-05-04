@@ -92,10 +92,10 @@ call :draw_progress "Installing Pandas (Data Engine)..."
 "%PYTHON_EXE%" -m pip install pandas --no-warn-script-location --quiet >> install_log.txt 2>&1
 if %errorlevel% neq 0 goto :error
 
-REM -- Step 6: Install Openpyxl & Plotly --
+REM -- Step 6: Install Openpyxl and Plotly --
 set /a current_step+=1
 set "bar=[######....]"
-call :draw_progress "Installing Plotly & Openpyxl..."
+call :draw_progress "Installing Plotly and Openpyxl..."
 "%PYTHON_EXE%" -m pip install openpyxl plotly --no-warn-script-location --quiet >> install_log.txt 2>&1
 if %errorlevel% neq 0 goto :error
 
@@ -145,6 +145,8 @@ if not exist "main.py" (
     if exist app_code.zip (
         tar -xf app_code.zip
         if exist "%GITHUB_EXTRACT_FOLDER%" (
+            REM Prevent the script from overwriting itself by deleting batch files from the downloaded code first
+            del /q "%GITHUB_EXTRACT_FOLDER%\*.bat" 2>nul
             xcopy /s /y /q "%GITHUB_EXTRACT_FOLDER%\*" . >nul
             rmdir /s /q "%GITHUB_EXTRACT_FOLDER%"
         )
