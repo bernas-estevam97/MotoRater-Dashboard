@@ -145,8 +145,8 @@ if not exist "main.py" (
     if exist app_code.zip (
         tar -xf app_code.zip
         if exist "%GITHUB_EXTRACT_FOLDER%" (
-            REM Prevent the script from overwriting itself by deleting batch files from the downloaded code first
-            del /q "%GITHUB_EXTRACT_FOLDER%\*.bat" 2>nul
+            REM Prevent the script from overwriting itself by deleting ONLY the main launcher from the downloaded code first
+            del /q "%GITHUB_EXTRACT_FOLDER%\Launch_Dashboard.bat" 2>nul
             xcopy /s /y /q "%GITHUB_EXTRACT_FOLDER%\*" . >nul
             rmdir /s /q "%GITHUB_EXTRACT_FOLDER%"
         )
