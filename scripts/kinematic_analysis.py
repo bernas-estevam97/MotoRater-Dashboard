@@ -7,6 +7,8 @@ import pingouin as pg
 import traceback
 import statsmodels.formula.api as smf
 import statsmodels.api as sm
+import io
+import zipfile
 
 # Suppress warnings
 
@@ -125,6 +127,7 @@ column_rename_map = {
 uploaded_file = st.file_uploader("Upload your cleaned Descriptive Statistics Excel file", type=['xlsx'])
 
 if uploaded_file:
+    # Check if this is a brand new file being uploaded
     if 'data_dict' not in st.session_state or st.session_state.get('uploaded_filename') != uploaded_file.name:
         xls = pd.ExcelFile(uploaded_file)
         sheet_names = xls.sheet_names
@@ -134,9 +137,14 @@ if uploaded_file:
         }
         st.session_state.sheet_names = sheet_names
         st.session_state.uploaded_filename = uploaded_file.name
-        if 'run_stats' in st.session_state:
-            del st.session_state['run_stats']
-
+        
+        # --- 🧹 CLEANUP OLD SESSION STATE ---
+        # Delete old extracted variables so the app doesn't mix File 1 IDs with File 2 Data
+        keys_to_delete = ['mapping_df', 'group_definitions_final', 'run_stats']
+        for key in keys_to_delete:
+            if key in st.session_state:
+                del st.session_state[key]
+        
     data_dict = st.session_state.data_dict
     sheet_names = st.session_state.sheet_names
 
@@ -754,6 +762,163 @@ if uploaded_file:
 
                 fig.update_layout(margin=dict(t=30))
                 st.plotly_chart(fig, width='stretch')
+
+                # =====================================================================
+                # SECTION 4: BATCH EXPORT (ALL METRICS AS PNG WITH STATS)
+                # =====================================================================
+                st.markdown("---")
+                st.subheader("📦 Batch Export All Measurements")
+                st.write("Generate and download a ZIP archive containing high-resolution **PNG** plots (with statistical significance) for **all** measurements in the current sheet.")
+                
+                if st.button("Generate All Plots (ZIP)", type="secondary"):
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    zip_buffer = io.BytesIO()
+                    
+                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                        total_metrics = len(numeric_cols)
+                        
+                        for idx, metric in enumerate(numeric_cols):
+                            status_text.text(f"Rendering {idx + 1}/{total_metrics}: {metric} ...")
+                            progress_bar.progress((idx) / total_metrics)
+                            
+                            # Prepare data for this specific metric
+                            loop_merged = pd.merge(df_to_plot[['Ids', metric]], mapping_filtered, on='Ids')
+                            loop_merged[metric] = pd.to_numeric(loop_merged[metric], errors='coerce')
+                            loop_df = loop_merged.dropna(subset=[metric]).copy()
+                            
+                            if loop_df.empty or loop_df['Group'].nunique() < 2:
+                                continue
+                            
+                            # Generate Summary Stats
+                            loop_summary = loop_df.groupby(['Group', 'Timepoint_Weeks'])[metric].agg(['mean', 'sem']).reset_index()
+                            loop_summary = loop_summary.rename(columns={'mean': metric, 'sem': 'SEM'}).sort_values(by='Timepoint_Weeks')
+                            title_text = f"Longitudinal Progression of {metric}"
+                            
+                            # 3. Calculate Significance (🚨 STRICT FLOAT MATCHING 🚨)
+                            batch_posthocs = pd.DataFrame()
+                            if show_pvals_on_line:
+                                rows = []
+                                # Create a strictly numeric timepoint column for safe filtering
+                                loop_df['_tp_numeric_'] = pd.to_numeric(loop_df['Timepoint_Weeks'], errors='coerce')
+                                
+                                for tp in selected_plot_timepoints:
+                                    try:
+                                        tp_num = float(tp)
+                                    except ValueError:
+                                        continue # Skip if timepoint isn't a valid number
+                                        
+                                    # Filter using the float value
+                                    tp_df = loop_df[loop_df['_tp_numeric_'] == tp_num]
+                                    
+                                    g1 = pd.to_numeric(tp_df[tp_df['Group'] == selected_plot_groups[0]][metric], errors='coerce').dropna()
+                                    g2 = pd.to_numeric(tp_df[tp_df['Group'] == selected_plot_groups[1]][metric], errors='coerce').dropna()
+                                    
+                                    if len(g1) > 1 and len(g2) > 1:
+                                        try:
+                                            res = pg.ttest(g1, g2)
+                                            p_col = next((c for c in res.columns if c.lower() in ['p-val', 'pval', 'p_val', 'p']), None)
+                                            if p_col:
+                                                rows.append({'Timepoint_Weeks': tp_num, 'p_val': float(res[p_col].iloc[0])})
+                                        except: 
+                                            try:
+                                                res = pg.mwu(g1, g2)
+                                                p_col = next((c for c in res.columns if c.lower() in ['p-val', 'pval', 'p_val', 'p']), None)
+                                                if p_col:
+                                                    rows.append({'Timepoint_Weeks': tp_num, 'p_val': float(res[p_col].iloc[0])})
+                                            except: pass
+                                
+                                if rows:
+                                    batch_posthocs = pd.DataFrame(rows)
+                                    if len(batch_posthocs) > 1:
+                                        _, p_corr = pg.multicomp(batch_posthocs['p_val'].values, method='holm')
+                                        batch_posthocs['p_val'] = p_corr
+
+                            # Build Figure
+                            if plot_format == "Line Plot":
+                                loop_fig = px.line(loop_summary, x='Timepoint_Weeks', y=metric, color='Group', markers=True,
+                                              error_y='SEM' if show_error_bars else None, title=title_text,
+                                              labels={'Timepoint_Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map)
+                            elif plot_format == "Bar Plot":
+                                loop_fig = px.bar(loop_summary, x='Timepoint_Weeks', y=metric, color='Group', barmode='group',
+                                             error_y='SEM' if show_error_bars else None, title=title_text,
+                                             labels={'Timepoint_Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map)
+                            elif plot_format == "Box Plot":
+                                loop_fig = px.box(loop_df, x='Timepoint_Weeks', y=metric, color='Group',
+                                             points="all" if show_points else False, title=title_text,
+                                             labels={'Timepoint_Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map)
+                            elif plot_format == "Violin Plot":
+                                loop_fig = px.violin(loop_df, x='Timepoint_Weeks', y=metric, color='Group', box=True,
+                                                points="all" if show_points else False, title=title_text,
+                                                labels={'Timepoint_Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map)
+                            
+                            loop_fig.update_layout(xaxis=xaxis_dict)
+                            
+                            # Draw Asterisks
+                            if show_pvals_on_line and not batch_posthocs.empty:
+                                y_max_overall = loop_df[metric].max()
+                                y_min_overall = loop_df[metric].min()
+                                offset = (y_max_overall - y_min_overall) * 0.08 if y_max_overall != y_min_overall else (y_max_overall * 0.05)
+                                highest_drawn_y = y_max_overall
+                                
+                                # Strict numeric matching for summary filtering as well
+                                loop_summary['_tp_numeric_'] = pd.to_numeric(loop_summary['Timepoint_Weeks'], errors='coerce')
+
+                                for _, row in batch_posthocs.iterrows():
+                                    tp_num = float(row['Timepoint_Weeks'])
+                                    pval = float(row['p_val'])
+                                    
+                                    if pval < 0.001: star = "***"
+                                    elif pval < 0.01: star = "**"
+                                    elif pval < 0.05: star = "*"
+                                    else: star = "ns"
+
+                                    if plot_format in ["Line Plot", "Bar Plot"] and show_error_bars:
+                                        tp_summary = loop_summary[loop_summary['_tp_numeric_'] == tp_num]
+                                        if tp_summary.empty: continue
+                                        y_highest_tp = float((tp_summary[metric] + tp_summary['SEM'].fillna(0)).max())
+                                    else:
+                                        tp_raw = loop_df[loop_df['_tp_numeric_'] == tp_num][metric]
+                                        if tp_raw.empty: continue
+                                        y_highest_tp = float(tp_raw.max())
+
+                                    y_pos = y_highest_tp + offset
+                                    if y_pos > highest_drawn_y: highest_drawn_y = y_pos
+
+                                    loop_fig.add_annotation(
+                                        x=tp_num, y=float(y_pos), text=star, showarrow=False,
+                                        font=dict(size=14 if star == "ns" else 22, color="#000000", family="Arial")
+                                    )
+
+                                y_upper_limit = highest_drawn_y + (offset * 1.5)
+                                y_lower_limit = y_min_overall - (offset * 0.5)
+                                loop_fig.update_layout(yaxis=dict(range=[y_lower_limit, y_upper_limit]))
+
+                            # FORCE WHITE BACKGROUND AND BLACK TEXT FOR EXPORT
+                            loop_fig.update_layout(
+                                margin=dict(t=30),
+                                paper_bgcolor="white", 
+                                plot_bgcolor="white",
+                                font=dict(color="black")
+                            )
+                            loop_fig.update_xaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
+                            loop_fig.update_yaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
+                            
+                            # Convert to PNG and save
+                            img_bytes = loop_fig.to_image(format="png", width=1200, height=800, scale=2)
+                            safe_metric = "".join([c for c in metric if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+                            zip_file.writestr(f"{safe_metric}.png", img_bytes)
+                            
+                    progress_bar.progress(1.0)
+                    status_text.success("✅ All plots generated successfully! Ready for download.")
+                    
+                    st.download_button(
+                        label="📥 Download PNG ZIP",
+                        data=zip_buffer.getvalue(),
+                        file_name=f"All_Kinematic_PNGs_{plot_sheet}.zip",
+                        mime="application/zip"
+                    )
 
     # --- TAB 5: RADAR PLOTS ---
     with tab5:
