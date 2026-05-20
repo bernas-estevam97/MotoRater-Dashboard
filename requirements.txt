@@ -12,3 +12,4 @@ openpyxl
 python-calamine
 pandas-flavor
 xarray
+kaleido==1.3.0
