@@ -1067,7 +1067,7 @@ if uploaded_file:
                             polar=polar_config,
                             # 2. Dynamic Title with Groups as a subtitle
                             title=dict(
-                                text=f"Kinematic Profile at {radar_tp} Weeks {'(Normalized)' if normalize_radar else '(Raw Values)'}<br><sup style='color: dimgrey;'>{groups_str}</sup>",
+                                text=f"Kinematic Profile at {radar_tp} Weeks {'(Normalized ' + radar_sheet + ')' if normalize_radar else '(Raw Values ' + radar_sheet + ')'}<br><sup style='color: dimgrey;'>{groups_str}</sup>",
                                 font=dict(color="black", size=18)
                             ),
                             # 3. Explicitly force both the legend title ('Group') and its text to be black
