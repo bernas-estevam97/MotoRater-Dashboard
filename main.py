@@ -44,14 +44,14 @@ all_measurements_parquet = st.Page(
 )
 
 kinematics_analysis_page = st.Page(
-    page="scripts/kinematic_analysis.py", 
+    page="scripts/kinematic_analysis_optimized.py", 
     title="Kinematics Longitudinal Analysis", 
     icon="📊" 
 )
 
 converter_page = st.Page(
     page="scripts/convert_to_parquet.py", 
-    title="Excel -> Parquet Converter", 
+    title="Excel -> Parquet/HDF5 Converter", 
     icon="⚡"
 )
 
