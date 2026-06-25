@@ -3,8 +3,8 @@ import pandas as pd
 import plotly.express as px
 import concurrent.futures
 import threading
-from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 import io
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 # --- Page Configuration ---
 # st.set_page_config(page_title="MotoRater Data Dashboard", layout="wide")
@@ -12,26 +12,43 @@ import io
 st.title("⏱️ MotoRater Time-Series analysis dashboard  - Excel")
 st.markdown("Visualize and compare time-series data from uploaded MotoRater Excel files.")
 
-# --- Sidebar: File Upload ---
-st.sidebar.header("1. Data Source")
-st.sidebar.info("Upload one or multiple Excel files below.")
+# --- Server Safety Configuration ---
+MAX_FILES_ALLOWED = 20 # Adjust this number based on your average file size
 
-# NEW: Replaced Tkinter folder picker with Streamlit's multi-file uploader
+
+# --- Sidebar: Data Source ---
+st.sidebar.header("1. Data Source")
 uploaded_files = st.sidebar.file_uploader(
-    "Choose an Excel directory", 
+    "Upload Excel Files (.xlsx, .xls)", 
     type=['xlsx', 'xls'], 
-    accept_multiple_files=True,
-    #accept_multiple_files="directory", If I want to get directory instead but not safe in cloud server because of the ammount of files.
-    label_visibility="collapsed"
+    accept_multiple_files=True
 )
 
-# Create a dictionary to easily access files by their name
-file_dict = {file.name: file for file in uploaded_files} if uploaded_files else {}
+# --- NEW: Dynamic Capacity Counter ---
+current_file_count = len(uploaded_files)
+remaining_space = MAX_FILES_ALLOWED - current_file_count
+
+# Calculate progress (safeguard against going over 1.0 if they upload too many)
+progress_value = min(current_file_count / MAX_FILES_ALLOWED, 1.0)
+st.sidebar.progress(progress_value)
+
+if remaining_space > 0:
+    st.sidebar.caption(f"📁 **{current_file_count} / {MAX_FILES_ALLOWED}** files uploaded. You can add **{remaining_space}** more.")
+elif remaining_space == 0:
+    st.sidebar.caption(f"⚠️ **{current_file_count} / {MAX_FILES_ALLOWED}** files uploaded. Server is at maximum capacity.")
+
+# --- Server Safety Check ---
+if current_file_count > MAX_FILES_ALLOWED:
+    st.sidebar.error(f"🚨 **Capacity Exceeded!** You uploaded {current_file_count} files.")
+    st.error(f"To keep the server from crashing, please remove {abs(remaining_space)} file(s) to get back under the {MAX_FILES_ALLOWED} file limit.")
+    st.stop() # Halts script execution
+
+# Create a dictionary to easily access uploaded files by their names
+file_dict = {file.name: file for file in uploaded_files}
 files = list(file_dict.keys())
 
 # --- Helpers: Excel Loading ---
-# NEW: We pass raw file bytes instead of a file path to avoid multithreading pointer crashes
-@st.cache_data
+@st.cache_data(show_spinner=False, max_entries=20, ttl=1800)
 def get_excel_sheets(file_bytes):
     try:
         xls = pd.ExcelFile(io.BytesIO(file_bytes), engine='calamine')
@@ -39,7 +56,7 @@ def get_excel_sheets(file_bytes):
     except Exception as e:
         return None
 
-@st.cache_data
+@st.cache_data(show_spinner=False, max_entries=20, ttl=1800)
 def load_excel_data(file_bytes, sheet_name, file_name):
     try:
         df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, engine='calamine')
@@ -71,8 +88,6 @@ if len(files) > 0:
     # ==========================================
     if not compare_mode:
         selected_file = st.sidebar.selectbox("Select File:", files)
-        
-        # Get the bytes from the uploaded file
         file_bytes = file_dict[selected_file].getvalue()
         sheet_names = get_excel_sheets(file_bytes)
         
@@ -119,26 +134,21 @@ if len(files) > 0:
 
                         title = f"{', '.join(y_axis)} over {x_axis}"
                         
-                        # --- NEW: Metric Color Pickers ---
                         st.markdown("### 🎨 Custom Metric Colors")
-                        # Create columns dynamically based on how many metrics are selected
                         color_cols = st.columns(len(y_axis))
                         custom_color_map = {}
                         default_px_colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"]
 
                         for i, col in enumerate(y_axis):
-                            with color_cols[i % len(color_cols)]: # Safe column wrapping
+                            with color_cols[i % len(color_cols)]: 
                                 chosen_color = st.color_picker(
                                     f"{col}", 
                                     value=default_px_colors[i % len(default_px_colors)],
-                                    key=f"single_color_{col}" # Keys prevent widget conflicts
+                                    key=f"single_color_{col}" 
                                 )
-                                # Map both the standard name and smoothed name so the color persists
                                 custom_color_map[col] = chosen_color
                                 custom_color_map[f"{col} (Smoothed)"] = chosen_color
-                        # -------------------------------
 
-                        # MODIFIED: Added color_discrete_map=custom_color_map to applicable charts
                         if chart_type == "Line": 
                             fig = px.line(plot_df, x=x_axis, y=y_to_plot, title=title, color_discrete_map=custom_color_map)
                         elif chart_type == "Scatter": 
@@ -150,7 +160,6 @@ if len(files) > 0:
                             fig = px.scatter_polar(polar_df, r=x_axis, theta='Angle', color='Metric', title=title, color_discrete_map=custom_color_map)
                             fig.update_layout(polar=dict(angularaxis=dict(direction="clockwise")))
                         elif chart_type == "Density Heatmap":
-                            # Note: Density Heatmaps use continuous color scales, so discrete mapping is omitted here
                             heat_df = plot_df.melt(id_vars=[x_axis], value_vars=y_to_plot, var_name='Metric', value_name='Value')
                             fig = px.density_heatmap(heat_df, x=x_axis, y='Value', facet_col='Metric', title=title, nbinsx=50, nbinsy=30)
                         elif chart_type == "Box Plot":
@@ -166,7 +175,7 @@ if len(files) > 0:
                     st.markdown("### 📊 Descriptive Statistics")
 
                     if selected_sheet == "Kinematics" and "Time" in df.columns:
-                        valid_times = pd.to_numeric(df["Time"]).dropna()
+                        valid_times = pd.to_numeric(df["Time"], errors='coerce').dropna()
                         if not valid_times.empty:
                             time_start = valid_times.iloc[0]
                             time_end = valid_times.iloc[-1]
@@ -209,7 +218,6 @@ if len(files) > 0:
             
             def get_excel_sheets_with_ctx(filename):
                 add_script_run_ctx(threading.current_thread(), ctx)
-                # Pass bytes instead of path
                 return get_excel_sheets(file_dict[filename].getvalue())
 
             with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -231,8 +239,8 @@ if len(files) > 0:
                 
                 def fetch_file_data_with_ctx(filename):
                     add_script_run_ctx(threading.current_thread(), ctx) 
-                    # Pass bytes instead of path
-                    return filename, load_excel_data(file_dict[filename].getvalue(), common_sheet, filename)
+                    file_bytes = file_dict[filename].getvalue()
+                    return filename, load_excel_data(file_bytes, common_sheet, filename)
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     results = executor.map(fetch_file_data_with_ctx, selected_files)
@@ -248,7 +256,7 @@ if len(files) > 0:
                         for i, (filename, data) in enumerate(dfs.items()):
                             with time_cols[i]:
                                 if "Time" in data.columns:
-                                    valid_times = pd.to_numeric(data["Time"]).dropna()
+                                    valid_times = pd.to_numeric(data["Time"], errors='coerce').dropna()
                                     if not valid_times.empty:
                                         t_start = valid_times.iloc[0]
                                         t_end = valid_times.iloc[-1]
@@ -283,20 +291,17 @@ if len(files) > 0:
                             st.error("Error: The column 'Time' is missing in one or more of the selected files.")
                             x_axis = None
 
-                        # --- NEW: File Color Pickers ---
                         st.markdown("### 🎨 Custom File Colors")
                         color_cols = st.columns(len(dfs))
                         file_colors = {}
-                        # Plotly Express default colors to use as standard presets
                         default_px_colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"]
 
                         for i, filename in enumerate(dfs.keys()):
-                            with color_cols[i]:
+                            with color_cols[i % len(color_cols)]: 
                                 file_colors[filename] = st.color_picker(
                                     f"{filename}", 
                                     value=default_px_colors[i % len(default_px_colors)]
                                 )
-                        # -------------------------------
 
                         if x_axis and y_axis:
                             all_plot_data = []
@@ -321,15 +326,12 @@ if len(files) > 0:
 
                             title = f"Comparing {', '.join(y_axis)} over {x_axis}"
                             
-                            # --- NEW: Map selected colors to the Legends and Sources ---
                             custom_color_map = {}
                             for source, color in file_colors.items():
-                                custom_color_map[source] = color # Maps for Box Plots (color='Source')
+                                custom_color_map[source] = color 
                                 for metric in y_axis:
-                                    custom_color_map[f"{source} | {metric}"] = color # Maps for Line/Scatter (color='Legend')
-                            # -----------------------------------------------------------
+                                    custom_color_map[f"{source} | {metric}"] = color 
 
-                            # MODIFIED: Added color_discrete_map=custom_color_map to all charts
                             if chart_type == "Line":
                                 fig = px.line(melted_df, x=x_axis, y='Value', color='Legend', title=title, color_discrete_map=custom_color_map)
                             elif chart_type == "Scatter":
@@ -343,8 +345,17 @@ if len(files) > 0:
                             st.plotly_chart(fig, width='stretch')
                         elif not y_axis:
                             st.info("👈 Select common Y axes to compare the files.")
-                else:
-                    st.warning("No Excel files found.")
-
 else:
-    st.info("👈 Select a folder to begin. Click the 📂 in the left side column")
+    st.info("👈 Upload your Excel files in the sidebar to begin.")
+
+
+
+
+
+
+# --- Sidebar: System Controls ---
+st.sidebar.header("⚙️ System")
+st.sidebar.caption("If you are done with your analysis, you can clear the server's memory to free up server RAM for other users. This will clear all cached data and uploaded files.")
+if st.sidebar.button("🧹 Clear Server Memory"):
+    st.cache_data.clear()
+    st.sidebar.success("Cache cleared! RAM freed.")

@@ -11,7 +11,7 @@ st.markdown("""
 
 ## 📂 1. Getting Started
 1. Go to the **Data Source** section in the left sidebar.
-2. Click the 📂 button to open a folder picker. 
+2. Click the button to open a folder picker. 
 3. Select the local folder on your computer that contains your MotoRater `.xlsx`, `.xls` or '.parquet' files if you used the converter.
 4. Once loaded, the sidebar will confirm how many files were found.
 
