@@ -519,43 +519,43 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
 
                 st.markdown("---")
 
-                # ENGINE 2: CONTINUOUS MATH
-                try:
-                    # groups_sorted = sorted(final_df['_group_'].unique())
-                    # ref_group, test_group = groups_sorted[0], groups_sorted[1]
-                    # #base_model_cont = smf.mixedlm("_metric_ ~ _time_cont_ * C(_group_)", final_df, groups="Subject_ID").fit(method='lbfgs')
-                    # base_model_cont = smf.mixedlm("_metric_ ~ _time_cont_ * C(_group_)", final_df, groups="Subject_ID").fit(method='powell')
-                    # #base_model_cont = smf.mixedlm("_metric_ ~ _time_cont_ * C(_group_)", final_df, groups="Subject_ID").fit(method='cg')
-                    # params = base_model_cont.params
-                    groups_sorted = sorted(final_df['_group_'].unique())
-                    ref_group, test_group = groups_sorted[0], groups_sorted[1]
+                # ENGINE 2: CONTINUOUS MATH --- Makes no sense in the scope of this project, but leaving it here for future reference.
+                # try:
+                #     # groups_sorted = sorted(final_df['_group_'].unique())
+                #     # ref_group, test_group = groups_sorted[0], groups_sorted[1]
+                #     # #base_model_cont = smf.mixedlm("_metric_ ~ _time_cont_ * C(_group_)", final_df, groups="Subject_ID").fit(method='lbfgs')
+                #     # base_model_cont = smf.mixedlm("_metric_ ~ _time_cont_ * C(_group_)", final_df, groups="Subject_ID").fit(method='powell')
+                #     # #base_model_cont = smf.mixedlm("_metric_ ~ _time_cont_ * C(_group_)", final_df, groups="Subject_ID").fit(method='cg')
+                #     # params = base_model_cont.params
+                #     groups_sorted = sorted(final_df['_group_'].unique())
+                #     ref_group, test_group = groups_sorted[0], groups_sorted[1]
                     
-                    # Create the same strict bubble here
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings("ignore", category=UserWarning, message=".*Random effects covariance is singular.*")
-                        base_model_cont = smf.mixedlm("_metric_ ~ _time_cont_ * C(_group_)", final_df, groups="Subject_ID").fit(method='lbfgs')
+                #     # Create the same strict bubble here
+                #     with warnings.catch_warnings():
+                #         warnings.filterwarnings("ignore", category=UserWarning, message=".*Random effects covariance is singular.*")
+                #         base_model_cont = smf.mixedlm("_metric_ ~ _time_cont_ * C(_group_)", final_df, groups="Subject_ID").fit(method='lbfgs')
                     
-                    params = base_model_cont.params
+                #     params = base_model_cont.params
                     
-                    b_ref = params.get('Intercept', 0)
-                    m_ref = params.get('_time_cont_', 0)
+                #     b_ref = params.get('Intercept', 0)
+                #     m_ref = params.get('_time_cont_', 0)
                     
-                    group_term = next((k for k in params.keys() if test_group in k and '_time_cont_' not in k), None)
-                    interaction_term = next((k for k in params.keys() if test_group in k and '_time_cont_' in k), None)
+                #     group_term = next((k for k in params.keys() if test_group in k and '_time_cont_' not in k), None)
+                #     interaction_term = next((k for k in params.keys() if test_group in k and '_time_cont_' in k), None)
                     
-                    b_diff = params.get(group_term, 0) if group_term else 0
-                    m_diff = params.get(interaction_term, 0) if interaction_term else 0
+                #     b_diff = params.get(group_term, 0) if group_term else 0
+                #     m_diff = params.get(interaction_term, 0) if interaction_term else 0
                     
-                    b_test, m_test = b_ref + b_diff, m_ref + m_diff
-                    function_dict[ref_group] = {'m': m_ref, 'b': b_ref}
-                    function_dict[test_group] = {'m': m_test, 'b': b_test}
+                #     b_test, m_test = b_ref + b_diff, m_ref + m_diff
+                #     function_dict[ref_group] = {'m': m_ref, 'b': b_ref}
+                #     function_dict[test_group] = {'m': m_test, 'b': b_test}
 
-                    st.markdown("### 3. Derived Growth Curve Functions $f(x)$")
-                    st.markdown("These continuous functions describe the overall trajectory of the data over time.")
-                    st.latex(f"f_{{{ref_group}}}(x) = {m_ref:.4f}x {'+' if b_ref >= 0 else '-'} {abs(b_ref):.4f}")
-                    st.latex(f"f_{{{test_group}}}(x) = {m_test:.4f}x {'+' if b_test >= 0 else '-'} {abs(b_test):.4f}")
-                except Exception as e:
-                    st.error(f"Failed to extract f(x) functions: {e}")
+                #     st.markdown("### 3. Derived Growth Curve Functions $f(x)$")
+                #     st.markdown("These continuous functions describe the overall trajectory of the data over time.")
+                #     st.latex(f"f_{{{ref_group}}}(x) = {m_ref:.4f}x {'+' if b_ref >= 0 else '-'} {abs(b_ref):.4f}")
+                #     st.latex(f"f_{{{test_group}}}(x) = {m_test:.4f}x {'+' if b_test >= 0 else '-'} {abs(b_test):.4f}")
+                # except Exception as e:
+                #     st.error(f"Failed to extract f(x) functions: {e}")
                     
     return display_posthocs, function_dict
 
@@ -573,13 +573,18 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
         else:
             show_points = st.checkbox("Show all data points", value=True)
             show_error_bars = False
+
+    # This is working with engine 2 - continuous math for growth curve functions, but it's not relevant to the current project. Leaving it commented out for future reference. 
+    # ------------------------------------------------------------------------------------------------------------------------------------------------------------------------#       
+    # with col_p3:
+    #     show_pvals_on_line = st.checkbox("Draw significance asterisks on plot", value=True)
+    #     if plot_format == "Line Plot":
+    #         show_growth_curves = st.checkbox("Overlay continuous f(x) curve", value=True)
+    #     else:
+    #         show_growth_curves = False
+
     with col_p3:
         show_pvals_on_line = st.checkbox("Draw significance asterisks on plot", value=True)
-        if plot_format == "Line Plot":
-            show_growth_curves = st.checkbox("Overlay continuous f(x) curve", value=True)
-        else:
-            show_growth_curves = False
-
     with st.expander("⚙️ Advanced Plot Settings", expanded=False):
         col_x1, col_x2 = st.columns(2)
         with col_x1:
@@ -606,14 +611,16 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
         fig = px.box(final_df, x='Timepoint_Weeks', y=plot_metric, color='Group', points="all" if show_points else False, title=title_text, color_discrete_map=color_map)
     elif plot_format == "Violin Plot":
         fig = px.violin(final_df, x='Timepoint_Weeks', y=plot_metric, color='Group', box=True, points="all" if show_points else False, title=title_text, color_discrete_map=color_map)
-
-    if plot_format == "Line Plot" and show_growth_curves and function_dict:
-        min_x, max_x = final_df['_time_cont_'].min(), final_df['_time_cont_'].max()
-        x_continuous = np.linspace(min_x, max_x, 100)
-        for grp, equation in function_dict.items():
-            y_continuous = (equation['m'] * x_continuous) + equation['b']
-            line_color = color_map.get(grp, 'gray')
-            fig.add_scatter(x=x_continuous, y=y_continuous, mode='lines', name=f"{grp} f(x) Trend", line=dict(color=line_color, width=3, dash='dot'), showlegend=True)
+    
+    # This is working with engine 2 - continuous math for growth curve functions, but it's not relevant to the current project. Leaving it commented out for future reference. 
+    # ------------------------------------------------------------------------------------------------------------------------------------------------------------------------#   
+    # if plot_format == "Line Plot" and show_growth_curves and function_dict:
+    #     min_x, max_x = final_df['_time_cont_'].min(), final_df['_time_cont_'].max()
+    #     x_continuous = np.linspace(min_x, max_x, 100)
+    #     for grp, equation in function_dict.items():
+    #         y_continuous = (equation['m'] * x_continuous) + equation['b']
+    #         line_color = color_map.get(grp, 'gray')
+    #         fig.add_scatter(x=x_continuous, y=y_continuous, mode='lines', name=f"{grp} f(x) Trend", line=dict(color=line_color, width=3, dash='dot'), showlegend=True)
 
     xaxis_dict = dict(type='linear')
     if force_exact_ticks: xaxis_dict['tickvals'] = sorted(final_df['Timepoint_Weeks'].unique())
