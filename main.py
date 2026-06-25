@@ -39,7 +39,7 @@ all_measurements_page = st.Page(
 
 all_measurements_parquet = st.Page(
     page="scripts/time_series_analysis_parquet.py", 
-    title="Time-Series analysis - Parquet files", 
+    title="Time-Series analysis - Parquet & HDF5 Files", 
     icon="📈",
 )
 

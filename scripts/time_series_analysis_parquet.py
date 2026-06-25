@@ -6,13 +6,14 @@ import tkinter as tk
 from tkinter import filedialog
 import concurrent.futures
 import threading
+import psutil # NEW: Imported for hardware detection
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
 # --- Page Configuration ---
 # st.set_page_config(page_title="MotoRater Data Dashboard", layout="wide")
 
-st.title("⏱️ MotoRater Time-Series analysis dashboard  - Parquet")
-st.markdown("Visualize and compare time-series data from local MotoRater Parquet files.")
+st.title("⏱️ MotoRater Time-Series analysis dashboard - Parquet / HDF5")
+st.markdown("Visualize and compare time-series data from local MotoRater Parquet and HDF5 files.")
 
 # --- Helper: Folder Picker ---
 def select_folder():
@@ -48,24 +49,43 @@ with col2:
 if folder_path != st.session_state.folder_path:
     st.session_state.folder_path = folder_path
 
-# To get the "sheets" (which are now just parquet files in the folder)
-def get_parquet_sheets(folder_path, file_folder_name):
-    # file_folder_name would be "Test_Run_01"
+# MODIFIED: Get sheets (files) handling both Parquet and HDF5
+def get_data_sheets(folder_path, file_folder_name):
     target_dir = os.path.join(folder_path, file_folder_name)
     if os.path.exists(target_dir):
-        # Return names without the .parquet extension to keep the UI looking the same
-        return [f.replace('.parquet', '') for f in os.listdir(target_dir) if f.endswith('.parquet')]
+        valid_extensions = ('.parquet', '.hdf5', '.h5')
+        sheets = []
+        for f in os.listdir(target_dir):
+            for ext in valid_extensions:
+                if f.endswith(ext):
+                    sheets.append(f.replace(ext, ''))
+        return list(set(sheets)) # Return unique sheet names
     return []
 
-# To load the data
+# MODIFIED: Load data handling both Parquet and HDF5
 @st.cache_data
-def load_parquet_data(folder_path, file_folder_name, sheet_name):
+def load_data(folder_path, file_folder_name, sheet_name):
     try:
-        file_path = os.path.join(folder_path, file_folder_name, f"{sheet_name}.parquet")
+        target_dir = os.path.join(folder_path, file_folder_name)
+        valid_extensions = ('.parquet', '.hdf5', '.h5')
+        file_path = None
+        ext_used = None
         
-        # This will load in milliseconds compared to Excel
-        df = pd.read_parquet(file_path, engine='pyarrow')
-        
+        for ext in valid_extensions:
+            temp_path = os.path.join(target_dir, f"{sheet_name}{ext}")
+            if os.path.exists(temp_path):
+                file_path = temp_path
+                ext_used = ext
+                break
+                
+        if not file_path:
+            return None
+            
+        if ext_used == '.parquet':
+            df = pd.read_parquet(file_path, engine='pyarrow')
+        elif ext_used in ('.hdf5', '.h5'):
+            df = pd.read_hdf(file_path)
+            
         # Filter logic remains the same
         if "filtered" in file_folder_name.lower() and sheet_name == "Kinematics":
             if len(df) > 6:
@@ -77,15 +97,54 @@ def load_parquet_data(folder_path, file_folder_name, sheet_name):
 
 # --- Main Logic ---
 if folder_path and os.path.isdir(folder_path):
-    # CHANGED: Look for directories inside the selected folder that contain .parquet files
+    valid_exts = ('.parquet', '.hdf5', '.h5')
+    
+    # MODIFIED: Look for directories that contain either .parquet, .hdf5, or .h5 files
     files = [
         f for f in os.listdir(folder_path) 
         if os.path.isdir(os.path.join(folder_path, f)) and 
-           any(fname.endswith('.parquet') for fname in os.listdir(os.path.join(folder_path, f)))
+           any(fname.endswith(valid_exts) for fname in os.listdir(os.path.join(folder_path, f)))
     ]
     
     if len(files) > 0:
         st.sidebar.success(f"Found {len(files)} data folders.")
+        
+        # ==========================================
+        # NEW: HARDWARE & MEMORY MONITOR
+        # ==========================================
+        st.sidebar.header("💻 Hardware & Memory")
+        mem = psutil.virtual_memory()
+        available_gb = mem.available / (1024**3)
+        total_gb = mem.total / (1024**3)
+        
+        st.sidebar.progress(mem.percent / 100, text=f"RAM: {mem.percent}% Used ({available_gb:.1f} GB Free)")
+
+        # Estimate memory requirements based on sub-folder contents
+        total_size_bytes = 0
+        for d in files:
+            d_path = os.path.join(folder_path, d)
+            for f in os.listdir(d_path):
+                if f.endswith(valid_exts):
+                    total_size_bytes += os.path.getsize(os.path.join(d_path, f))
+                    
+        avg_size_bytes = total_size_bytes / len(files) if files else 0
+        
+        # Heuristic: Parquet/HDF5 are heavily compressed. DataFrames can take ~6x the disk size in RAM
+        estimated_ram_per_folder = avg_size_bytes * 6 
+        
+        # Safe threshold: Use max 60% of currently available RAM
+        safe_ram_budget = mem.available * 0.60 
+        
+        if estimated_ram_per_folder > 0:
+            recommended_max_files = max(1, int(safe_ram_budget // estimated_ram_per_folder))
+        else:
+            recommended_max_files = len(files)
+
+        if recommended_max_files < len(files):
+            st.sidebar.warning(f"⚠️ **Memory Alert:** Your data files are highly compressed. In RAM, they are very large. It is recommended to compare a maximum of **{recommended_max_files} folders** at once to avoid crashing.")
+        else:
+            st.sidebar.success(f"✅ System memory is sufficient for comparing all available folders in this directory.")
+        # ==========================================
         
         st.sidebar.header("2. Analysis Mode")
         compare_mode = st.sidebar.checkbox("🔄 Compare Multiple Files")
@@ -95,13 +154,11 @@ if folder_path and os.path.isdir(folder_path):
         # ==========================================
         if not compare_mode:
             selected_file = st.sidebar.selectbox("Select Data Folder:", files)
-            # CHANGED: Use Parquet functions
-            sheet_names = get_parquet_sheets(folder_path, selected_file)
+            sheet_names = get_data_sheets(folder_path, selected_file)
             
             if sheet_names:
                 selected_sheet = st.sidebar.selectbox("Select Sheet:", sheet_names) if len(sheet_names) > 1 else sheet_names[0]
-                # CHANGED: Use Parquet functions
-                df = load_parquet_data(folder_path, selected_file, selected_sheet)
+                df = load_data(folder_path, selected_file, selected_sheet)
                 
                 if df is not None:
                     st.subheader(f"Analyzing: {selected_file}")
@@ -118,7 +175,7 @@ if folder_path and os.path.isdir(folder_path):
                             st.text_input("X-Axis (Fixed)", value=x_axis, disabled=True)
                             
                         with c2: y_axis = st.multiselect("Y-Axis (Values)", numeric_cols, default=None)
-                        with c3: chart_type = st.selectbox("Chart Type", ["Line", "Scatter", "Bar"])
+                        with c3: chart_type = st.selectbox("Chart Type", ["Line", "Scatter", "Bar", "Polar (Angles)", "Density Heatmap", "Box Plot"])
 
                         smoothing = st.slider("🌊 Noise Reduction (Rolling Avg)", 1, 50, 1) if chart_type == "Line" else 0
 
@@ -140,26 +197,21 @@ if folder_path and os.path.isdir(folder_path):
 
                             title = f"{', '.join(y_axis)} over {x_axis}"
                             
-                            # --- NEW: Metric Color Pickers ---
                             st.markdown("### 🎨 Custom Metric Colors")
-                            # Create columns dynamically based on how many metrics are selected
                             color_cols = st.columns(len(y_axis))
                             custom_color_map = {}
                             default_px_colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"]
 
                             for i, col in enumerate(y_axis):
-                                with color_cols[i % len(color_cols)]: # Safe column wrapping
+                                with color_cols[i % len(color_cols)]:
                                     chosen_color = st.color_picker(
                                         f"{col}", 
                                         value=default_px_colors[i % len(default_px_colors)],
-                                        key=f"single_color_{col}" # Keys prevent widget conflicts
+                                        key=f"single_color_{col}"
                                     )
-                                    # Map both the standard name and smoothed name so the color persists
                                     custom_color_map[col] = chosen_color
                                     custom_color_map[f"{col} (Smoothed)"] = chosen_color
-                            # -------------------------------
 
-                            # MODIFIED: Added color_discrete_map=custom_color_map to applicable charts
                             if chart_type == "Line": 
                                 fig = px.line(plot_df, x=x_axis, y=y_to_plot, title=title, color_discrete_map=custom_color_map)
                             elif chart_type == "Scatter": 
@@ -171,7 +223,6 @@ if folder_path and os.path.isdir(folder_path):
                                 fig = px.scatter_polar(polar_df, r=x_axis, theta='Angle', color='Metric', title=title, color_discrete_map=custom_color_map)
                                 fig.update_layout(polar=dict(angularaxis=dict(direction="clockwise")))
                             elif chart_type == "Density Heatmap":
-                                # Note: Density Heatmaps use continuous color scales, so discrete mapping is omitted here
                                 heat_df = plot_df.melt(id_vars=[x_axis], value_vars=y_to_plot, var_name='Metric', value_name='Value')
                                 fig = px.density_heatmap(heat_df, x=x_axis, y='Value', facet_col='Metric', title=title, nbinsx=50, nbinsy=30)
                             elif chart_type == "Box Plot":
@@ -182,7 +233,6 @@ if folder_path and os.path.isdir(folder_path):
                         elif not y_axis:
                             st.info("👈 Select Y axes to see the chart.")
 
-                    # --- TAB 2: Statistics ---
                     with tab2:
                         st.markdown("### 📊 Descriptive Statistics")
 
@@ -217,164 +267,155 @@ if folder_path and os.path.isdir(folder_path):
         else:
             st.sidebar.markdown("---")
             selected_files = st.sidebar.multiselect(
-                "Select Files to Compare:", 
+                "Select Data Folders to Compare:", 
                 files, 
                 default=files[:2] if len(files) >= 2 else files
             )
 
             if len(selected_files) < 2:
-                st.info("👈 Please select at least two files from the sidebar to compare.")
+                st.info("👈 Please select at least two folders from the sidebar to compare.")
             else:
-                # 🛑 GRAB THE CONTEXT FROM THE MAIN THREAD 🛑
-                ctx = get_script_run_ctx()
-
-                # OPTIMIZATION 4: Multi-threading for finding common sheets
-                file_paths = [os.path.join(folder_path, f) for f in selected_files]
-                common_sheets = None
-                
-                # Wrapper function to inject context before getting sheets
-                def get_excel_sheets_with_ctx(filepath):
-                    add_script_run_ctx(threading.current_thread(), ctx)
-                    return get_parquet_sheets(filepath)
-
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    # Use the wrapper function here
-                    sheets_results = list(executor.map(get_excel_sheets_with_ctx, file_paths))
-                
-                for sheets in sheets_results:
-                    if sheets is not None:
-                        if common_sheets is None:
-                            common_sheets = set(sheets)
-                        else:
-                            common_sheets = common_sheets.intersection(set(sheets))
-                
-                if not common_sheets:
-                    st.error("No common sheets found among the selected files.")
+                # NEW: Enforce RAM Limit
+                if len(selected_files) > recommended_max_files:
+                    st.error(f"🛑 You have selected {len(selected_files)} folders, but your system memory only safely supports ~{recommended_max_files} right now. Please deselect some folders to prevent the app from crashing.")
                 else:
-                    common_sheet = st.selectbox("Select Sheet to compare across files:", list(common_sheets))
+                    ctx = get_script_run_ctx()
+
+                    file_paths = [os.path.join(folder_path, f) for f in selected_files]
+                    common_sheets = None
                     
-                    # OPTIMIZATION 4: Multi-threading for loading Excel data
-                    dfs = {}
-                    
-                    # Wrapper function to inject context before fetching data
-                    def fetch_file_data_with_ctx(filename):
-                        add_script_run_ctx(threading.current_thread(), ctx) # Inject context
-                        path = os.path.join(folder_path, filename)
-                        return filename, load_parquet_data(path, common_sheet, filename)
+                    def get_data_sheets_with_ctx(filepath):
+                        add_script_run_ctx(threading.current_thread(), ctx)
+                        # Extract the folder name back out of the full path for the function
+                        base_folder = os.path.dirname(filepath)
+                        folder_name = os.path.basename(filepath)
+                        return get_data_sheets(base_folder, folder_name)
 
                     with concurrent.futures.ThreadPoolExecutor() as executor:
-                        # Use the wrapper function here
-                        results = executor.map(fetch_file_data_with_ctx, selected_files)
-                        for filename, df in results:
-                            if df is not None:
-                                dfs[filename] = df
-
-        
+                        sheets_results = list(executor.map(get_data_sheets_with_ctx, file_paths))
                     
-                    if len(dfs) > 1:
-                        st.subheader(f"⚖️ Comparing {len(dfs)} Files")
+                    for sheets in sheets_results:
+                        if sheets is not None:
+                            if common_sheets is None:
+                                common_sheets = set(sheets)
+                            else:
+                                common_sheets = common_sheets.intersection(set(sheets))
+                    
+                    if not common_sheets:
+                        st.error("No common sheets/files found among the selected folders.")
+                    else:
+                        common_sheet = st.selectbox("Select Data Sheet to compare across folders:", list(common_sheets))
+                        
+                        dfs = {}
+                        
+                        def fetch_file_data_with_ctx(filename):
+                            add_script_run_ctx(threading.current_thread(), ctx) 
+                            return filename, load_data(folder_path, filename, common_sheet)
 
-                        if common_sheet == "Kinematics":
-                            time_cols = st.columns(len(dfs))
-                            for i, (filename, data) in enumerate(dfs.items()):
-                                with time_cols[i]:
-                                    if "Time" in data.columns:
-                                        valid_times = pd.to_numeric(data["Time"], errors='coerce').dropna()
-                                        if not valid_times.empty:
-                                            t_start = valid_times.iloc[0]
-                                            t_end = valid_times.iloc[-1]
-                                            st.info(f"⏱️ **{filename}**\n\n{t_end - t_start:.2f} s")
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            results = executor.map(fetch_file_data_with_ctx, selected_files)
+                            for filename, df in results:
+                                if df is not None:
+                                    dfs[filename] = df
+
+                        if len(dfs) > 1:
+                            st.subheader(f"⚖️ Comparing {len(dfs)} Folders")
+
+                            if common_sheet == "Kinematics":
+                                time_cols = st.columns(len(dfs))
+                                for i, (filename, data) in enumerate(dfs.items()):
+                                    with time_cols[i]:
+                                        if "Time" in data.columns:
+                                            valid_times = pd.to_numeric(data["Time"], errors='coerce').dropna()
+                                            if not valid_times.empty:
+                                                t_start = valid_times.iloc[0]
+                                                t_end = valid_times.iloc[-1]
+                                                st.info(f"⏱️ **{filename}**\n\n{t_end - t_start:.2f} s")
+                                            else:
+                                                st.warning(f"⏱️ **{filename}**\n\nNo valid time.")
                                         else:
-                                            st.warning(f"⏱️ **{filename}**\n\nNo valid time.")
-                                    else:
-                                        st.warning(f"⏱️ **{filename}**\n\nNo 'Time' col.")
-                            st.markdown("---")
+                                            st.warning(f"⏱️ **{filename}**\n\nNo 'Time' col.")
+                                st.markdown("---")
 
-                        all_numeric_cols = [set(d.select_dtypes(include=['float64', 'int64']).columns) for d in dfs.values()]
-                        common_numeric = list(set.intersection(*all_numeric_cols))
-                        common_numeric = [col for col in common_numeric if col != "Time"]
+                            all_numeric_cols = [set(d.select_dtypes(include=['float64', 'int64']).columns) for d in dfs.values()]
+                            common_numeric = list(set.intersection(*all_numeric_cols))
+                            common_numeric = [col for col in common_numeric if col != "Time"]
 
-                        if not common_numeric:
-                            st.error("These files have no common numeric columns to plot.")
-                        else:
-                            c1, c2, c3 = st.columns(3)
-                            
-                            with c1: 
-                                x_axis = "Time"
-                                st.text_input("Common X-Axis (Fixed)", value=x_axis, disabled=True)
+                            if not common_numeric:
+                                st.error("These datasets have no common numeric columns to plot.")
+                            else:
+                                c1, c2, c3 = st.columns(3)
                                 
-                            with c2: y_axis = st.multiselect("Common Y-Axis", common_numeric, default=None)
-                            with c3: chart_type = st.selectbox("Chart Type", ["Line", "Scatter"])
-
-                            smoothing = st.slider("🌊 Noise Reduction (Rolling Avg)", 1, 50, 1) if chart_type == "Line" else 0
-
-                            time_missing = any("Time" not in d.columns for d in dfs.values())
-                            if time_missing:
-                                st.error("Error: The column 'Time' is missing in one or more of the selected files.")
-                                x_axis = None
-
-                            # --- NEW: File Color Pickers ---
-                            st.markdown("### 🎨 Custom File Colors")
-                            color_cols = st.columns(len(dfs))
-                            file_colors = {}
-                            # Plotly Express default colors to use as standard presets
-                            default_px_colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"]
-
-                            for i, filename in enumerate(dfs.keys()):
-                                with color_cols[i]:
-                                    file_colors[filename] = st.color_picker(
-                                        f"{filename}", 
-                                        value=default_px_colors[i % len(default_px_colors)]
-                                    )
-                            # -------------------------------
-
-                            if x_axis and y_axis:
-                                all_plot_data = []
-                                
-                                for filename, data in dfs.items():
-                                    plot_df = data[[x_axis] + y_axis].copy()
-                                    plot_df['Source'] = filename
+                                with c1: 
+                                    x_axis = "Time"
+                                    st.text_input("Common X-Axis (Fixed)", value=x_axis, disabled=True)
                                     
-                                    try:
-                                        plot_df = plot_df.sort_values(by=x_axis)
-                                    except: pass
+                                with c2: y_axis = st.multiselect("Common Y-Axis", common_numeric, default=None)
+                                with c3: chart_type = st.selectbox("Chart Type", ["Line", "Scatter", "Polar (Angles)", "Box Plot"])
 
-                                    if smoothing > 1:
-                                        for col in y_axis:
-                                            plot_df[col] = plot_df[col].rolling(window=smoothing).mean()
-                                            
-                                    all_plot_data.append(plot_df)
+                                smoothing = st.slider("🌊 Noise Reduction (Rolling Avg)", 1, 50, 1) if chart_type == "Line" else 0
 
-                                combined_df = pd.concat(all_plot_data, ignore_index=True)
-                                melted_df = combined_df.melt(id_vars=[x_axis, 'Source'], value_vars=y_axis, var_name='Metric', value_name='Value')
-                                melted_df['Legend'] = melted_df['Source'] + " | " + melted_df['Metric']
+                                time_missing = any("Time" not in d.columns for d in dfs.values())
+                                if time_missing:
+                                    st.error("Error: The column 'Time' is missing in one or more of the selected datasets.")
+                                    x_axis = None
 
-                                title = f"Comparing {', '.join(y_axis)} over {x_axis}"
-                                
-                                # --- NEW: Map selected colors to the Legends and Sources ---
-                                custom_color_map = {}
-                                for source, color in file_colors.items():
-                                    custom_color_map[source] = color # Maps for Box Plots (color='Source')
-                                    for metric in y_axis:
-                                        custom_color_map[f"{source} | {metric}"] = color # Maps for Line/Scatter (color='Legend')
-                                # -----------------------------------------------------------
+                                st.markdown("### 🎨 Custom File Colors")
+                                color_cols = st.columns(len(dfs))
+                                file_colors = {}
+                                default_px_colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"]
 
-                                # MODIFIED: Added color_discrete_map=custom_color_map to all charts
-                                if chart_type == "Line":
-                                    fig = px.line(melted_df, x=x_axis, y='Value', color='Legend', title=title, color_discrete_map=custom_color_map)
-                                elif chart_type == "Scatter":
-                                    fig = px.scatter(melted_df, x=x_axis, y='Value', color='Legend', title=title, color_discrete_map=custom_color_map)
-                                elif chart_type == "Polar (Angles)":
-                                    fig = px.scatter_polar(melted_df, r=x_axis, theta='Value', color='Legend', title=title, color_discrete_map=custom_color_map)
-                                    fig.update_layout(polar=dict(angularaxis=dict(direction="clockwise")))
-                                elif chart_type == "Box Plot":
-                                    fig = px.box(melted_df, x='Metric', y='Value', color='Source', title=title, color_discrete_map=custom_color_map)
+                                for i, filename in enumerate(dfs.keys()):
+                                    with color_cols[i]:
+                                        file_colors[filename] = st.color_picker(
+                                            f"{filename}", 
+                                            value=default_px_colors[i % len(default_px_colors)]
+                                        )
 
-                                st.plotly_chart(fig, width='stretch')
-                            elif not y_axis:
-                                st.info("👈 Select common Y axes to compare the files.")
+                                if x_axis and y_axis:
+                                    all_plot_data = []
+                                    
+                                    for filename, data in dfs.items():
+                                        plot_df = data[[x_axis] + y_axis].copy()
+                                        plot_df['Source'] = filename
+                                        
+                                        try:
+                                            plot_df = plot_df.sort_values(by=x_axis)
+                                        except: pass
+
+                                        if smoothing > 1:
+                                            for col in y_axis:
+                                                plot_df[col] = plot_df[col].rolling(window=smoothing).mean()
+                                                
+                                        all_plot_data.append(plot_df)
+
+                                    combined_df = pd.concat(all_plot_data, ignore_index=True)
+                                    melted_df = combined_df.melt(id_vars=[x_axis, 'Source'], value_vars=y_axis, var_name='Metric', value_name='Value')
+                                    melted_df['Legend'] = melted_df['Source'] + " | " + melted_df['Metric']
+
+                                    title = f"Comparing {', '.join(y_axis)} over {x_axis}"
+                                    
+                                    custom_color_map = {}
+                                    for source, color in file_colors.items():
+                                        custom_color_map[source] = color 
+                                        for metric in y_axis:
+                                            custom_color_map[f"{source} | {metric}"] = color 
+
+                                    if chart_type == "Line":
+                                        fig = px.line(melted_df, x=x_axis, y='Value', color='Legend', title=title, color_discrete_map=custom_color_map)
+                                    elif chart_type == "Scatter":
+                                        fig = px.scatter(melted_df, x=x_axis, y='Value', color='Legend', title=title, color_discrete_map=custom_color_map)
+                                    elif chart_type == "Polar (Angles)":
+                                        fig = px.scatter_polar(melted_df, r=x_axis, theta='Value', color='Legend', title=title, color_discrete_map=custom_color_map)
+                                        fig.update_layout(polar=dict(angularaxis=dict(direction="clockwise")))
+                                    elif chart_type == "Box Plot":
+                                        fig = px.box(melted_df, x='Metric', y='Value', color='Source', title=title, color_discrete_map=custom_color_map)
+
+                                    st.plotly_chart(fig, width='stretch')
+                                elif not y_axis:
+                                    st.info("👈 Select common Y axes to compare the files.")
     else:
-        st.warning("No Excel files found.")
+        st.warning("No Parquet or HDF5 folders found.")
 elif folder_path:
     st.error("Invalid folder.")
 else:
