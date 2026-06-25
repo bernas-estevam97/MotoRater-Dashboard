@@ -14,6 +14,7 @@ import scipy.stats as stats
 import polars as pl
 from joblib import Parallel, delayed
 import json
+from statsmodels.stats.multitest import multipletests
 
 # Suppress warnings
 import warnings
@@ -135,6 +136,74 @@ def format_pval(x):
     except:
         return str(x)
 
+
+# ---- Helper function for repeated measures tests ----#
+
+def run_pairwise_contrasts(model, final_df, selected_timepoints, ref_group, test_group, method='sidak'):
+    """
+    Computes Group B - Group A contrasts at each timepoint using the pooled
+    variance/covariance from the already-fitted omnibus model (OLS or MixedLM).
+
+    Uses a numeric contrast (R-matrix) rather than a string hypothesis, because
+    MixedLMResults.t_test() does not support patsy-style string formulas the way
+    OLSResults.t_test() does (passing a string raises
+    AttributeError: 'str' object has no attribute 'shape').
+
+    Also restricts the contrast vector to fixed-effects parameters only
+    (model.model.k_fe), since MixedLM's t_test() expects a vector matching
+    just the fixed-effects covariance block, not the full params list that
+    includes the random-effects variance component ("Subject_ID Var").
+    """
+    param_names = list(model.params.index)
+    # OLS has no random-effects variance term; MixedLM does (k_fe < len(params)).
+    k_fe = getattr(model.model, 'k_fe', len(param_names))
+    fe_names = param_names[:k_fe]
+
+    group_token = f"[T.{test_group}]"
+    group_term = next((p for p in fe_names if group_token in p and ':' not in p), None)
+
+    rows = []
+    for tp in selected_timepoints:
+        tp_str = str(tp)
+        time_token = f"[T.{tp_str}]"
+        interaction_term = next(
+            (p for p in fe_names if group_token in p and time_token in p and ':' in p),
+            None
+        )
+
+        if group_term is None:
+            rows.append({'Timepoint_Weeks': tp, 'Group A': ref_group, 'Group B': test_group,
+                         'Effect_Size': np.nan, 'SE': np.nan, 'p_unc': np.nan})
+            continue
+
+        r_matrix = np.zeros(k_fe)
+        r_matrix[fe_names.index(group_term)] = 1.0
+        if interaction_term is not None:
+            r_matrix[fe_names.index(interaction_term)] = 1.0
+        r_matrix = r_matrix.reshape(1, -1)
+
+        try:
+            contrast = model.t_test(r_matrix)
+            rows.append({
+                'Timepoint_Weeks': tp,
+                'Group A': ref_group,
+                'Group B': test_group,
+                'Effect_Size': float(np.array(contrast.effect).flatten()[0]),
+                'SE': float(np.array(contrast.sd).flatten()[0]),
+                'p_unc': float(np.array(contrast.pvalue).flatten()[0])
+            })
+        except Exception:
+            rows.append({'Timepoint_Weeks': tp, 'Group A': ref_group, 'Group B': test_group,
+                         'Effect_Size': np.nan, 'SE': np.nan, 'p_unc': np.nan})
+
+    out = pd.DataFrame(rows)
+    out['p_corr'] = np.nan
+    valid = out['p_unc'].notna()
+    if valid.sum() > 0:
+        _, p_corr, _, _ = multipletests(out.loc[valid, 'p_unc'].values, method=method)
+        out.loc[valid, 'p_corr'] = p_corr
+    return out
+
 # --- CACHED DATA LOADER ---
 @st.cache_data(show_spinner="Loading data (Optimized)...")
 def load_data(file_bytes: bytes, filename: str) -> dict:
@@ -175,6 +244,8 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
     """
     Cached statistical pipeline. Streamlit will replay the UI elements generated within this function.
     """
+    import warnings
+    warnings.filterwarnings("ignore", message=".*Random effects covariance is singular.*", category=UserWarning)
     final_df = pd.read_json(io.StringIO(final_df_json), orient='records')
     display_posthocs = pd.DataFrame()
     function_dict = {}
@@ -258,8 +329,20 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                 st.error(f"🚨 **Insufficient Data:** Longitudinal testing requires at least 3 subjects per group. Minimum detected: n={min_n}.")
             else:
                 # ENGINE 1: CATEGORICAL STATS
+                #OLD SETUP
+                # try:
+                #     #base_model_cat = smf.mixedlm("_metric_ ~ C(_time_) * C(_group_)", final_df, groups="Subject_ID").fit(method='cg')
+                #     #base_model_cat = smf.mixedlm("_metric_ ~ C(_time_) * C(_group_)", final_df, groups="Subject_ID").fit(method='lbfgs')
+                #     base_model_cat = smf.mixedlm("_metric_ ~ C(_time_) * C(_group_)", final_df, groups="Subject_ID").fit(method='powell')
+                #     residuals = base_model_cat.resid
+                # except:
+                #     base_model_cat = smf.ols("_metric_ ~ C(_time_) * C(_group_)", data=final_df).fit()
+                #     residuals = base_model_cat.resid
                 try:
-                    base_model_cat = smf.mixedlm("_metric_ ~ C(_time_) * C(_group_)", final_df, groups="Subject_ID").fit(method='cg')
+                    # Create a strict bubble to catch the statsmodels warning
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", category=UserWarning, message=".*Random effects covariance is singular.*")
+                        base_model_cat = smf.mixedlm("_metric_ ~ C(_time_) * C(_group_)", final_df, groups="Subject_ID").fit(method='lbfgs')
                     residuals = base_model_cat.resid
                 except:
                     base_model_cat = smf.ols("_metric_ ~ C(_time_) * C(_group_)", data=final_df).fit()
@@ -330,22 +413,32 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                             if col in anova_res.columns: anova_res[col] = anova_res[col].apply(format_pval)
                         st.dataframe(anova_res, width='stretch', hide_index=True)
                         
-                        st.markdown("**Pairwise T-Tests (Holm-Corrected for FDR)**")
-                        rows = []
-                        for tp in selected_timepoints:
-                            tp_df = final_df[final_df['Timepoint_Weeks'] == tp]
-                            g1 = tp_df[tp_df['Group'] == selected_groups[0]][plot_metric]
-                            g2 = tp_df[tp_df['Group'] == selected_groups[1]][plot_metric]
-                            if len(g1) > 1 and len(g2) > 1:
-                                res = pg.ttest(g1, g2)
-                                p_val_found = next((c for c in res.columns if c.lower() in ['p-val', 'pval', 'p_val', 'p']), None)
-                                eff_col = next((c for c in res.columns if 'cohen' in c.lower()), None)
-                                if p_val_found:
-                                    rows.append({'Timepoint_Weeks': tp, 'Group A': selected_groups[0], 'Group B': selected_groups[1], 'p_unc': res[p_val_found].values[0], 'Cohen_d': res[eff_col].values[0] if eff_col else np.nan})
-                        if rows:
-                            display_posthocs = pd.DataFrame(rows)
-                            _, p_corr = pg.multicomp(display_posthocs['p_unc'].values, method='holm')
-                            display_posthocs['p_corr'] = p_corr
+                        # Old version -- DONT DELETE
+
+                        # st.markdown("**Pairwise T-Tests (Holm-Corrected for FDR)**")
+                        # rows = []
+                        # for tp in selected_timepoints:
+                        #     tp_df = final_df[final_df['Timepoint_Weeks'] == tp]
+                        #     g1 = tp_df[tp_df['Group'] == selected_groups[0]][plot_metric]
+                        #     g2 = tp_df[tp_df['Group'] == selected_groups[1]][plot_metric]
+                        #     if len(g1) > 1 and len(g2) > 1:
+                        #         res = pg.ttest(g1, g2)
+                        #         p_val_found = next((c for c in res.columns if c.lower() in ['p-val', 'pval', 'p_val', 'p']), None)
+                        #         eff_col = next((c for c in res.columns if 'cohen' in c.lower()), None)
+                        #         if p_val_found:
+                        #             rows.append({'Timepoint_Weeks': tp, 'Group A': selected_groups[0], 'Group B': selected_groups[1], 'p_unc': res[p_val_found].values[0], 'Cohen_d': res[eff_col].values[0] if eff_col else np.nan})
+                        # if rows:
+                        #     display_posthocs = pd.DataFrame(rows)
+                        #     _, p_corr = pg.multicomp(display_posthocs['p_unc'].values, method='holm')
+                        #     display_posthocs['p_corr'] = p_corr
+
+                        st.markdown("**Pairwise Contrasts (Model-Based, Šídák-Corrected)**")
+                        contrast_model = smf.ols("_metric_ ~ C(_time_) * C(_group_)", data=final_df).fit()
+                        groups_sorted = sorted(final_df['_group_'].unique())
+                        display_posthocs = run_pairwise_contrasts(
+                            contrast_model, final_df, selected_timepoints,
+                            ref_group=groups_sorted[0], test_group=groups_sorted[1], method='sidak'
+                        )
                     except Exception as e:
                         st.error(f"ANOVA Failed: {e}")
 
@@ -353,26 +446,19 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                     # PIPELINE B: LMM
                     try:
                         st.markdown("**Linear Mixed-Effects Model (LMM)**")
-                        df_lmm = base_model_cat.summary().tables[1].reset_index()
-                        df_lmm.rename(columns={'index': 'Parameter'}, inplace=True)
-                        st.dataframe(df_lmm.astype(str), width='stretch', hide_index=True)
                         
-                        st.markdown("**Pairwise T-Tests (Holm-Corrected for FDR)**")
-                        rows = []
-                        for tp in selected_timepoints:
-                            tp_df = final_df[final_df['Timepoint_Weeks'] == tp]
-                            g1 = tp_df[tp_df['Group'] == selected_groups[0]][plot_metric]
-                            g2 = tp_df[tp_df['Group'] == selected_groups[1]][plot_metric]
-                            if len(g1) > 1 and len(g2) > 1:
-                                res = pg.ttest(g1, g2)
-                                p_val_found = next((c for c in res.columns if c.lower() in ['p-val', 'pval', 'p_val', 'p']), None)
-                                eff_col = next((c for c in res.columns if 'cohen' in c.lower()), None)
-                                if p_val_found:
-                                    rows.append({'Timepoint_Weeks': tp, 'Group A': selected_groups[0], 'Group B': selected_groups[1], 'p_unc': res[p_val_found].values[0], 'Cohen_d': res[eff_col].values[0] if eff_col else np.nan})
-                        if rows:
-                            display_posthocs = pd.DataFrame(rows)
-                            _, p_corr = pg.multicomp(display_posthocs['p_unc'].values, method='holm')
-                            display_posthocs['p_corr'] = p_corr
+                        # Fix: Extract raw data from SimpleTable into a Pandas DataFrame
+                        sm_table = base_model_cat.summary().tables[1]
+                        df_lmm = pd.DataFrame(sm_table.data[1:], columns=sm_table.data[0])
+                        
+                        st.dataframe(df_lmm.astype(str), width='stretch', hide_index=True)
+
+                        st.markdown("**Pairwise Contrasts (Model-Based, Šídák-Corrected)**")
+                        groups_sorted = sorted(final_df['_group_'].unique())
+                        display_posthocs = run_pairwise_contrasts(
+                            base_model_cat, final_df, selected_timepoints,
+                            ref_group=groups_sorted[0], test_group=groups_sorted[1], method='sidak'
+                        )
                     except Exception as e:
                         st.error(f"LMM Failed: {e}")
 
@@ -380,8 +466,31 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                     # PIPELINE C: GEE
                     st.markdown("**Generalized Estimating Equations (GEE)**")
                     try:
+                        # Extract the raw dependent variable data
+                        metric_data = final_df['_metric_'].dropna()
+
+                        # 1. Check for Count Data (All values are integers and >= 0)
+                        is_count = (metric_data >= 0).all() and pd.api.types.is_integer_dtype(metric_data) or (metric_data % 1 == 0).all()
+
+                        # 2. Check for Strictly Positive Continuous Data (Values > 0)
+                        is_strictly_positive = (metric_data > 0).all()
+
+                        # 3. Assess Skewness
+                        skewness = stats.skew(metric_data)
+
+                        # Dynamic Family Assignment
+                        if is_count:
+                            st.info("📊 **GEE Distribution:** Detected count data. Applying Poisson family.")
+                            fam = sm.families.Poisson()
+                        elif is_strictly_positive and skewness > 1.0:
+                            st.info("📊 **GEE Distribution:** Detected heavily right-skewed positive data. Applying Gamma family.")
+                            fam = sm.families.Gamma(link=sm.families.links.Log())
+                        else:
+                            st.info("📊 **GEE Distribution:** Defaulting to Gaussian family with robust standard errors.")
+                            fam = sm.families.Gaussian()
+
+                        # Fit the GEE with the dynamically selected family
                         cov_struct = sm.cov_struct.Autoregressive()
-                        fam = sm.families.Gaussian() 
                         md = smf.gee("_metric_ ~ C(_time_) * C(_group_)", groups=final_df["Subject_ID"], data=final_df, cov_struct=cov_struct, family=fam)
                         mdf = md.fit()
                         
@@ -389,32 +498,14 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                         df_gee = pd.DataFrame(sm_table.data[1:], columns=sm_table.data[0])
                         st.dataframe(df_gee, width='stretch')
                         
-                        st.markdown("**GEE Pairwise Contrasts (Holm-Corrected)**")
+                        st.markdown("**GEE Pairwise Contrasts (Model-Based, Holm-Corrected)**")
                         groups_sorted = sorted(final_df['_group_'].unique())
-                        ref_group, test_group = groups_sorted[0], groups_sorted[1]
-                        ref_time = sorted(final_df['_time_'].unique())[0]
-                        
-                        rows = []
-                        for tp in selected_timepoints:
-                            tp_str = str(tp)
-                            hypothesis = f"C(_group_)[T.{test_group}] = 0" if tp_str == ref_time else f"C(_group_)[T.{test_group}] + C(_time_)[T.{tp_str}]:C(_group_)[T.{test_group}] = 0"
-                            contrast_res = mdf.t_test(hypothesis)
-                            
-                            safe_p_val = float(np.array(contrast_res.pvalue).flatten()[0])
-                            safe_effect = float(np.array(contrast_res.effect).flatten()[0])
-                            
-                            rows.append({
-                                'Timepoint_Weeks': tp, 
-                                'Group A': ref_group, 
-                                'Group B': test_group, 
-                                'p_unc': safe_p_val, 
-                                'Effect_Size': safe_effect
-                            })
-                            
-                        if rows:
-                            display_posthocs = pd.DataFrame(rows)
-                            _, p_corr = pg.multicomp(display_posthocs['p_unc'].values, method='holm')
-                            display_posthocs['p_corr'] = p_corr
+
+                        # Leverage your existing matrix-based helper function to bypass string parsing errors
+                        display_posthocs = run_pairwise_contrasts(
+                            mdf, final_df, selected_timepoints,
+                            ref_group=groups_sorted[0], test_group=groups_sorted[1], method='holm'
+                        )
                     except Exception as e:
                         st.error(f"GEE Failed: {e}")
 
@@ -430,10 +521,20 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
 
                 # ENGINE 2: CONTINUOUS MATH
                 try:
+                    # groups_sorted = sorted(final_df['_group_'].unique())
+                    # ref_group, test_group = groups_sorted[0], groups_sorted[1]
+                    # #base_model_cont = smf.mixedlm("_metric_ ~ _time_cont_ * C(_group_)", final_df, groups="Subject_ID").fit(method='lbfgs')
+                    # base_model_cont = smf.mixedlm("_metric_ ~ _time_cont_ * C(_group_)", final_df, groups="Subject_ID").fit(method='powell')
+                    # #base_model_cont = smf.mixedlm("_metric_ ~ _time_cont_ * C(_group_)", final_df, groups="Subject_ID").fit(method='cg')
+                    # params = base_model_cont.params
                     groups_sorted = sorted(final_df['_group_'].unique())
                     ref_group, test_group = groups_sorted[0], groups_sorted[1]
                     
-                    base_model_cont = smf.mixedlm("_metric_ ~ _time_cont_ * C(_group_)", final_df, groups="Subject_ID").fit(method='cg')
+                    # Create the same strict bubble here
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", category=UserWarning, message=".*Random effects covariance is singular.*")
+                        base_model_cont = smf.mixedlm("_metric_ ~ _time_cont_ * C(_group_)", final_df, groups="Subject_ID").fit(method='lbfgs')
+                    
                     params = base_model_cont.params
                     
                     b_ref = params.get('Intercept', 0)
@@ -556,7 +657,7 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
 
     fig.update_layout(margin=dict(t=30))
     fig.update_xaxes(showgrid=False)
-    fig.update_yaxes(showgrid=True)
+    fig.update_yaxes()
 
     st.plotly_chart(fig, width='stretch')
 
@@ -677,11 +778,12 @@ if uploaded_file:
         help="Change this to White (#FFFFFF) if you are using Streamlit's Dark Mode so the asterisks are visible."
     )
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Data Viewer", 
         "🆔 ID Overview", 
         "🧪 Experimental Groups Setup", 
-        "🧮 Statistical Analysis ➡️ Longitudinal Plotting 📈",
+        "🧮 2-Group Analysis ➡️ Longitudinal Plotting 📈",
+        "🌐 Multi-Group Omnibus Analysis",
         "🕸️ Radar Plots"
     ])
 
@@ -898,7 +1000,7 @@ if uploaded_file:
                 final_df['_time_cont_'] = final_df['Timepoint_Weeks'].astype(float) 
                 final_df['_group_'] = final_df['Group'].astype(str)
 
-                # --- CALL CACHED STATS ENGINE ---
+                # --- CALL CACHED STATS ENGINE (AUTO-RUN) ---
                 display_posthocs, function_dict = run_longitudinal_stats(
                     final_df.to_json(orient='records'),
                     plot_metric,
@@ -908,7 +1010,16 @@ if uploaded_file:
 
                 # --- RENDER ISOLATED PLOTTING FRAGMENT ---
                 if not final_df.empty:
-                    render_plot_section(final_df, display_posthocs, function_dict, color_map, plot_metric, selected_plot_timepoints, annotation_color)
+                    render_plot_section(
+                        final_df, 
+                        display_posthocs, 
+                        function_dict, 
+                        color_map, 
+                        plot_metric, 
+                        selected_plot_timepoints, 
+                        annotation_color
+                    )
+
 
                 # --- SECTION 4: BATCH EXPORT (Parallelized via joblib) ---
                 st.markdown("---")
@@ -946,8 +1057,139 @@ if uploaded_file:
                         mime="application/zip"
                     )
 
-    # --- TAB 5: RADAR PLOTS ---
+    # --- TAB 5: MULTI-GROUP OMNIBUS ANALYSIS ---
     with tab5:
+        st.subheader("Multi-Group Omnibus Analysis (3+ Groups)")
+        
+        if 'mapping_df' not in st.session_state:
+            st.warning("⚠️ Please go to the 'Experimental Groups Setup' tab and extract variables first.")
+        else:
+            mapping_df = st.session_state.mapping_df.copy()
+            if st.session_state.get('exclude_subjects_ui'):
+                mapping_df = mapping_df[~mapping_df['Subject_ID'].isin(st.session_state.exclude_subjects_ui)]
+            
+            col1_m, col2_m = st.columns(2)
+            with col1_m:
+                plot_sheet_m = st.selectbox("Select Statistic (Sheet):", sheet_names, key="plot_sheet_multi")
+            
+            df_to_plot_m = data_dict[plot_sheet_m]
+            numeric_cols_m = [col for col in df_to_plot_m.columns if col != 'Ids']
+            
+            with col2_m:
+                plot_metric_m = st.selectbox("Select Measurement to Analyze:", numeric_cols_m, key="plot_metric_select_multi")
+            
+            all_groups_m = sorted([g for g in mapping_df['Group'].unique() if g != "Unknown"])
+            all_timepoints_m = sorted(mapping_df['Timepoint_Weeks'].dropna().unique())
+            
+            col_grp_m, col_tp_m = st.columns(2)
+            with col_grp_m:
+                selected_multi_groups = st.multiselect(
+                    "Select 3 or more Groups:", 
+                    all_groups_m, 
+                    default=all_groups_m if len(all_groups_m) >= 3 else None,
+                    key="plot_groups_multiselect_multi"
+                )
+            with col_tp_m:
+                selected_multi_tps = st.multiselect(
+                    "Select Timepoints:", 
+                    all_timepoints_m, 
+                    default=all_timepoints_m,
+                    key="plot_tps_multiselect_multi"
+                )
+
+            if len(selected_multi_groups) < 3:
+                st.info("💡 Please select at least 3 groups to use the Multi-Group analysis engine. For 2 groups, use Tab 4.")
+            elif len(selected_multi_tps) == 0:
+                st.error("🚨 Please select at least 1 timepoint to analyze.")
+            else:
+                # --- DATA PREP ---
+                mapping_filt_m = mapping_df[
+                    (mapping_df['Group'].isin(selected_multi_groups)) & 
+                    (mapping_df['Timepoint_Weeks'].isin(selected_multi_tps))
+                ]
+                
+                merged_pl_m = (
+                    pl.from_pandas(df_to_plot_m[['Ids', plot_metric_m]])
+                    .join(pl.from_pandas(mapping_filt_m), on='Ids', how='inner')
+                    .with_columns(pl.col(plot_metric_m).cast(pl.Float64, strict=False))
+                    .drop_nulls(subset=[plot_metric_m])
+                    .group_by(['Subject_ID', 'Group', 'Timepoint_Weeks'])
+                    .agg(pl.col(plot_metric_m).mean())
+                )
+                final_df_m = merged_pl_m.to_pandas()
+                final_df_m['_metric_'] = final_df_m[plot_metric_m].astype(float)
+                
+                # --- VISUALIZATION (Clean Plot, No Asterisks) ---
+                col_pm1, col_pm2 = st.columns(2)
+                with col_pm1:
+                    plot_format_m = st.selectbox("Plot Format:", ["Line Plot", "Box Plot"], key="multi_format")
+                with col_pm2:
+                    if plot_format_m == "Line Plot":
+                        show_error_m = st.checkbox("Show SEM error bars", value=True, key="multi_err")
+                    else:
+                        show_pts_m = st.checkbox("Show all data points", value=False, key="multi_pts")
+
+                summary_df_m = final_df_m.groupby(['Group', 'Timepoint_Weeks'])[plot_metric_m].agg(['mean', 'sem']).reset_index()
+                summary_df_m = summary_df_m.rename(columns={'mean': plot_metric_m, 'sem': 'SEM'}).sort_values(by='Timepoint_Weeks')
+                title_text_m = f"Omnibus Progression of {plot_metric_m}"
+
+                if plot_format_m == "Line Plot":
+                    fig_m = px.line(summary_df_m, x='Timepoint_Weeks', y=plot_metric_m, color='Group', markers=True, error_y='SEM' if show_error_m else None, title=title_text_m, color_discrete_map=color_map)
+                else:
+                    fig_m = px.box(final_df_m, x='Timepoint_Weeks', y=plot_metric_m, color='Group', points="all" if show_pts_m else False, title=title_text_m, color_discrete_map=color_map)
+
+                fig_m.update_layout(margin=dict(t=30), xaxis=dict(type='linear', tickvals=sorted(selected_multi_tps)))
+                st.plotly_chart(fig_m, width='stretch')
+
+                # --- STATS: OMNIBUS & POST-HOC HEATMAP TABLE ---
+                st.markdown("### Post-Hoc Pairwise Comparisons (FDR-Corrected)")
+                st.write("This table shows every pairwise comparison at each timepoint. P-values are corrected for multiple comparisons to prevent false positives.")
+                
+                posthoc_rows = []
+                for tp in selected_multi_tps:
+                    tp_data = final_df_m[final_df_m['Timepoint_Weeks'] == tp]
+                    if tp_data['Group'].nunique() >= 2:
+                        try:
+                            # Use pingouin's pairwise tests for quick, comprehensive multi-group post-hocs
+                            pt = pg.pairwise_tests(data=tp_data, dv='_metric_', between='Group', padjust='fdr_bh')
+                            
+                            # Dynamically find the p-value columns to prevent KeyError
+                            p_unc_col = next((c for c in pt.columns if c.lower() in ['p-unc', 'p_unc', 'p-val', 'pval', 'p_val', 'p']), None)
+                            p_corr_col = next((c for c in pt.columns if c.lower() in ['p-corr', 'p_corr']), None)
+                            
+                            if p_unc_col:
+                                for _, row in pt.iterrows():
+                                    posthoc_rows.append({
+                                        'Timepoint_Weeks': tp,
+                                        'Group A': row['A'],
+                                        'Group B': row['B'],
+                                        'p_uncorrected': row[p_unc_col],
+                                        'p_FDR_corrected': row[p_corr_col] if p_corr_col and pd.notna(row[p_corr_col]) else row[p_unc_col]
+                                    })
+                        except Exception as e:
+                            pass # Silently skip math errors (e.g., zero variance or n=1)
+                            
+                if posthoc_rows:
+                    ph_df = pd.DataFrame(posthoc_rows)
+                    # Create a "Significance" flag for easy reading
+                    ph_df['Significant?'] = ph_df['p_FDR_corrected'].apply(lambda p: "⭐ Yes" if p < 0.05 else "No")
+                    
+                    # Format p-values beautifully
+                    ph_df['p_uncorrected'] = ph_df['p_uncorrected'].apply(format_pval)
+                    ph_df['p_FDR_corrected'] = ph_df['p_FDR_corrected'].apply(format_pval)
+                    
+                    # Highlight significant rows using Pandas styling
+                    def highlight_sig(row):
+                        if row['Significant?'] == "⭐ Yes":
+                            return ['background-color: rgba(46, 204, 113, 0.2)'] * len(row)
+                        return [''] * len(row)
+
+                    st.dataframe(ph_df.style.apply(highlight_sig, axis=1), width='stretch', hide_index=True)
+                else:
+                    st.info("Not enough data to run post-hoc comparisons.")
+
+    # --- TAB 6: RADAR PLOTS (Previously Tab 5) ---
+    with tab6:
         st.subheader("Multivariate Radar Plot Analysis")
         
         if 'mapping_df' not in st.session_state:
@@ -1088,7 +1330,7 @@ if uploaded_file:
                         st.plotly_chart(fig_radar, width='stretch')
             st.markdown("---")
             st.markdown("##### ❗Important Note:")
-            radar_info = st.markdown("Every time any color, group, timepoint, or metric selection is changed, your current radar plot generated will disappear and you will need to generate the radar plot again using the **Generate Radar Plot** button to update the visualization. This ensures that the plot accurately reflects your current selections and allows you to explore different combinations of metrics and groups effectively.", text_alignment="justify")
+            st.markdown("Every time any color, group, timepoint, or metric selection is changed, your current radar plot generated will disappear and you will need to generate the radar plot again using the **Generate Radar Plot** button to update the visualization. This ensures that the plot accurately reflects your current selections and allows you to explore different combinations of metrics and groups effectively.", text_alignment="justify")
 
 else:
     st.info("Please upload your Excel, HDF5, or Parquet file to get started.")
