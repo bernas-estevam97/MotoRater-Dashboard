@@ -52,7 +52,7 @@ st.markdown("""
         * Select the measurement, exactly **2 groups**, and the timepoints you want to analyze.
         * **Automated Stats Engine**: The app will automatically test your data's assumptions (Normality via D'Agostino-Pearson, Design Balance) and select the most mathematically appropriate pipeline:
             * *Cross-Sectional (1 Timepoint)*: Welch's T-Test or Mann-Whitney U.
-            * *Longitudinal (Balanced)*: 2-Way Mixed ANOVA.
+            * *Longitudinal (Balanced)*: 2-Way Mixed ANOVA. **(Note: Post-hoc pairwise contrasts strictly use the repeated-measures pooled error term, mathematically aligning with GraphPad Prism).**
             * *Longitudinal (Missing Data)*: Linear Mixed-Effects Model (LMM).
             * *Non-Normal Longitudinal*: Generalized Estimating Equations (GEE).
         * **Interactive Plotting**: Scroll down to see your data visualized with significance brackets drawn directly on the chart.
@@ -72,6 +72,9 @@ st.markdown("""
         ---
         
         ## 🛠️ Troubleshooting & FAQ
+        
+        **Q: Do the statistical results match GraphPad Prism?**
+        * **A:** Yes! The automated engine is specifically designed to mirror GraphPad Prism 8+ methodologies. For example, missing longitudinal data automatically triggers a Mixed-Effects Model (REML) just like Prism, and balanced repeated-measures post-hoc tests correctly calculate their standard errors using the pooled variance of the subjects rather than treating them as independent observations.
         
         **Q: My statistical analysis pipeline switched from ANOVA to LMM or GEE. Why?**
         * **A:** Traditional ANOVAs require "perfect" balanced data (no missing timepoints). If a subject missed a week, or if your data severely violated normality (skewed distribution), the app's smart engine automatically stepped down to a Linear Mixed Model or GEE to prevent mathematically invalid results. You can view the assumption checks in the expandable dropdown.
