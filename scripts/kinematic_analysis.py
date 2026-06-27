@@ -433,10 +433,14 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                         #     display_posthocs['p_corr'] = p_corr
 
                         st.markdown("**Pairwise Contrasts (Model-Based, Šídák-Corrected)**")
-                        contrast_model = smf.ols("_metric_ ~ C(_time_) * C(_group_)", data=final_df).fit()
                         groups_sorted = sorted(final_df['_group_'].unique())
+                        
+                        # 🔴 PRISM ALIGNMENT FIX: 
+                        # We pass 'base_model_cat' (the MixedLM) instead of a new OLS model.
+                        # This calculates contrasts using the repeated-measures pooled error term, 
+                        # perfectly matching GraphPad Prism's marginal mean post-hoc methodology.
                         display_posthocs = run_pairwise_contrasts(
-                            contrast_model, final_df, selected_timepoints,
+                            base_model_cat, final_df, selected_timepoints,
                             ref_group=groups_sorted[0], test_group=groups_sorted[1], method='sidak'
                         )
                     except Exception as e:
