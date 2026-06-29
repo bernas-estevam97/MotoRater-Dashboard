@@ -451,9 +451,15 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                     try:
                         st.markdown("**Linear Mixed-Effects Model (LMM)**")
                         
-                        # Fix: Extract raw data from SimpleTable into a Pandas DataFrame
+                        # Fix: Handle statsmodels returning either a DataFrame (MixedLM) or SimpleTable (OLS)
                         sm_table = base_model_cat.summary().tables[1]
-                        df_lmm = pd.DataFrame(sm_table.data[1:], columns=sm_table.data[0])
+
+                        if isinstance(sm_table, pd.DataFrame):
+                            # MixedLM returns a DataFrame natively. The parameter names are in the index.
+                            df_lmm = sm_table.reset_index().rename(columns={"index": "Parameter"})
+                        else:
+                            # Fallback if an OLS model was used and returned a SimpleTable
+                            df_lmm = pd.DataFrame(sm_table.data[1:], columns=sm_table.data[0])
                         
                         st.dataframe(df_lmm.astype(str), width='stretch', hide_index=True)
 
@@ -494,9 +500,33 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                             fam = sm.families.Gaussian()
 
                         # Fit the GEE with the dynamically selected family
-                        cov_struct = sm.cov_struct.Autoregressive()
-                        md = smf.gee("_metric_ ~ C(_time_) * C(_group_)", groups=final_df["Subject_ID"], data=final_df, cov_struct=cov_struct, family=fam)
-                        mdf = md.fit()
+                        # --- Dynamic GEE Covariance Fallback ---
+                        try:
+                            # First attempt: Autoregressive (Ideal for longitudinal timepoints)
+                            cov_struct = sm.cov_struct.Autoregressive()
+                            md = smf.gee("_metric_ ~ C(_time_) * C(_group_)", 
+                                        groups=final_df["Subject_ID"], 
+                                        data=final_df, 
+                                        cov_struct=cov_struct, 
+                                        family=fam)
+                            mdf = md.fit()
+                            
+                            # Print success note to the app
+                            st.info("📊 **GEE Covariance:** Successfully applied an **Autoregressive** structure.")
+
+                        except Exception as e:
+                            # Fallback: Exchangeable (Robust to missing data/dropouts)
+                            
+                            # Warn the user in the app about the swap
+                            st.warning("⚠️ **GEE Covariance Fallback:** The Autoregressive solver failed (often due to missing data or unstable correlations). Automatically swapped to an **Exchangeable** structure for mathematical stability.")
+                            
+                            cov_struct = sm.cov_struct.Exchangeable()
+                            md = smf.gee("_metric_ ~ C(_time_) * C(_group_)", 
+                                        groups=final_df["Subject_ID"], 
+                                        data=final_df, 
+                                        cov_struct=cov_struct, 
+                                        family=fam)
+                            mdf = md.fit()
                         
                         sm_table = mdf.summary().tables[1]
                         df_gee = pd.DataFrame(sm_table.data[1:], columns=sm_table.data[0])
@@ -667,7 +697,7 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
             fig.update_layout(yaxis=dict(range=[y_min_overall - (offset * 0.5), highest_drawn_y + (offset * 1.5)]))
 
     fig.update_layout(margin=dict(t=30))
-    fig.update_xaxes(showgrid=False)
+    fig.update_xaxes()
     fig.update_yaxes()
 
     st.plotly_chart(fig, width='stretch')
@@ -1046,7 +1076,8 @@ if uploaded_file:
                     
                     xaxis_dict = dict(type='linear', tickvals=sorted(selected_plot_timepoints))
                     
-                    results = Parallel(n_jobs=-1, backend="threading")(
+                    # Swapped backend to 'loky' (multiprocessing) to prevent Kaleido browser crashes
+                    results = Parallel(n_jobs=-1, backend="loky")(
                         delayed(render_single_metric_job)(
                             metric, df_to_plot, mapping_filtered, 
                             selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict
