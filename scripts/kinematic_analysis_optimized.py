@@ -15,6 +15,7 @@ import polars as pl
 from joblib import Parallel, delayed
 import json
 from statsmodels.stats.multitest import multipletests
+from streamlit_javascript import st_javascript
 
 # Suppress warnings
 import warnings
@@ -84,6 +85,30 @@ def add_plotly_significance_brackets(fig, df, posthocs_df, x_col, y_col, text_co
     return fig
 # ---------------------------------
 
+st.markdown("""
+<style>
+/* Main app text */
+html, body, [class*="css"] {
+}
+
+/* Labels */
+label {
+    font-weight: 600 !important;
+}
+
+/* Markdown */
+p, li, span {
+    font-weight: 500;
+}
+
+/* Dataframe headers */
+th {
+    font-weight: 600 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide") 
 st.title("🐁 Kinematics Longitudinal Analyzer")
@@ -107,8 +132,8 @@ column_rename_map = {
     "Tail Tip Height": "Tail Tip Height (m)",
     "Shoulder Height (Right)": "Shoulder Height (Right) (m)",
     "Shoulder Height (Left)": "Shoulder Height (Left) (m)",
-    "Protraction/Retraction (Right)": "Protraction/Retraction (Right) (º)",
-    "Protraction/Retraction (Left)": "Protraction/Retraction (Left) (º)",
+    "Protraction/Retraction (Right)": "Protraction/Retraction (Right) (m)",
+    "Protraction/Retraction (Left)": "Protraction/Retraction (Left) (m)",
     "Hip Angle (Right)": "Hip Angle (Right) (º)",
     "Knee Angle (Right)": "Knee Angle (Right) (º)",
     "Hip Angle (Left)": "Hip Angle (Left) (º)",
@@ -172,7 +197,7 @@ def run_pairwise_contrasts(model, final_df, selected_timepoints, ref_group, test
         )
 
         if group_term is None:
-            rows.append({'Timepoint_Weeks': tp, 'Group A': ref_group, 'Group B': test_group,
+            rows.append({'Timepoint Weeks': tp, 'Group A': ref_group, 'Group B': test_group,
                          'Effect_Size': np.nan, 'SE': np.nan, 'p_unc': np.nan})
             continue
 
@@ -185,7 +210,7 @@ def run_pairwise_contrasts(model, final_df, selected_timepoints, ref_group, test
         try:
             contrast = model.t_test(r_matrix)
             rows.append({
-                'Timepoint_Weeks': tp,
+                'Timepoint Weeks': tp,
                 'Group A': ref_group,
                 'Group B': test_group,
                 'Effect_Size': float(np.array(contrast.effect).flatten()[0]),
@@ -193,7 +218,7 @@ def run_pairwise_contrasts(model, final_df, selected_timepoints, ref_group, test
                 'p_unc': float(np.array(contrast.pvalue).flatten()[0])
             })
         except Exception:
-            rows.append({'Timepoint_Weeks': tp, 'Group A': ref_group, 'Group B': test_group,
+            rows.append({'Timepoint Weeks': tp, 'Group A': ref_group, 'Group B': test_group,
                          'Effect_Size': np.nan, 'SE': np.nan, 'p_unc': np.nan})
 
     out = pd.DataFrame(rows)
@@ -311,7 +336,7 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                         p_val_raw = res[p_col].values[0]
                         d_val = res[eff_col].values[0] if eff_col else np.nan
                         display_posthocs = pd.DataFrame([{
-                            'Timepoint_Weeks': tp, 
+                            'Timepoint Weeks': tp, 
                             'Group A': selected_groups[0], 
                             'Group B': selected_groups[1], 
                             'p_unc': p_val_raw,
@@ -361,7 +386,7 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                 use_parametric = is_normal_strict or clt_safe
                 
                 expected_tps = len(selected_timepoints)
-                subj_tps = final_df.groupby('Subject_ID')['Timepoint_Weeks'].nunique()
+                subj_tps = final_df.groupby('Subject_ID')['Timepoint Weeks'].nunique()
                 is_balanced = (subj_tps == expected_tps).all()
 
                 st.markdown("### 1. Model Assumptions & Pipeline Selection")
@@ -382,8 +407,8 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                     else:
                         st.error("⚠️ **Design Balance:** Violated (Missing timepoints)")
                         expected_tps_list = sorted(selected_timepoints)
-                        subj_tps_list = final_df.groupby(['Subject_ID', 'Group'])['Timepoint_Weeks'].agg(list).reset_index()
-                        subj_tps_list['Missing_Timepoints'] = subj_tps_list['Timepoint_Weeks'].apply(lambda tps: [t for t in expected_tps_list if t not in tps])
+                        subj_tps_list = final_df.groupby(['Subject_ID', 'Group'])['Timepoint Weeks'].agg(list).reset_index()
+                        subj_tps_list['Missing_Timepoints'] = subj_tps_list['Timepoint Weeks'].apply(lambda tps: [t for t in expected_tps_list if t not in tps])
                         incomplete_subjs = subj_tps_list[subj_tps_list['Missing_Timepoints'].str.len() > 0].copy()
                         
                         if not incomplete_subjs.empty:
@@ -404,10 +429,10 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                 if use_parametric and is_balanced:
                     # PIPELINE A: ANOVA
                     try:
-                        spher, _, _, _, spher_pval = pg.sphericity(data=final_df, dv='_metric_', within='Timepoint_Weeks', subject='Subject_ID')
+                        spher, _, _, _, spher_pval = pg.sphericity(data=final_df, dv='_metric_', within='Timepoint Weeks', subject='Subject_ID')
                         if not spher: st.warning(f"⚠️ **Sphericity Violated:** p={spher_pval:.4f}. Greenhouse-Geisser correction applied.")
                         
-                        anova_res = pg.mixed_anova(dv=plot_metric, within='Timepoint_Weeks', between='Group', subject='Subject_ID', data=final_df)
+                        anova_res = pg.mixed_anova(dv=plot_metric, within='Timepoint Weeks', between='Group', subject='Subject_ID', data=final_df)
                         st.markdown("**2-Way Mixed ANOVA (Main Effects & Interaction)**")
                         for col in ['p_unc', 'p_val', 'p_GG_corr']:
                             if col in anova_res.columns: anova_res[col] = anova_res[col].apply(format_pval)
@@ -418,7 +443,7 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                         # st.markdown("**Pairwise T-Tests (Holm-Corrected for FDR)**")
                         # rows = []
                         # for tp in selected_timepoints:
-                        #     tp_df = final_df[final_df['Timepoint_Weeks'] == tp]
+                        #     tp_df = final_df[final_df['Timepoint Weeks'] == tp]
                         #     g1 = tp_df[tp_df['Group'] == selected_groups[0]][plot_metric]
                         #     g2 = tp_df[tp_df['Group'] == selected_groups[1]][plot_metric]
                         #     if len(g1) > 1 and len(g2) > 1:
@@ -426,7 +451,7 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
                         #         p_val_found = next((c for c in res.columns if c.lower() in ['p-val', 'pval', 'p_val', 'p']), None)
                         #         eff_col = next((c for c in res.columns if 'cohen' in c.lower()), None)
                         #         if p_val_found:
-                        #             rows.append({'Timepoint_Weeks': tp, 'Group A': selected_groups[0], 'Group B': selected_groups[1], 'p_unc': res[p_val_found].values[0], 'Cohen_d': res[eff_col].values[0] if eff_col else np.nan})
+                        #             rows.append({'Timepoint Weeks': tp, 'Group A': selected_groups[0], 'Group B': selected_groups[1], 'p_unc': res[p_val_found].values[0], 'Cohen_d': res[eff_col].values[0] if eff_col else np.nan})
                         # if rows:
                         #     display_posthocs = pd.DataFrame(rows)
                         #     _, p_corr = pg.multicomp(display_posthocs['p_unc'].values, method='holm')
@@ -595,7 +620,7 @@ def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups
 
 # --- STREAMLIT FRAGMENT FOR PLOTTING ---
 @st.fragment
-def render_plot_section(final_df, display_posthocs, function_dict, color_map, plot_metric, selected_plot_timepoints, annotation_color):
+def render_plot_section(final_df, display_posthocs, function_dict, color_map, plot_metric, selected_plot_timepoints, annotation_color, plot_width, plot_height):
     """Isolated rerun fragment for rendering plots instantly without recalculating stats/data."""
     col_p1, col_p2, col_p3 = st.columns(3)
     with col_p1:
@@ -633,18 +658,18 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
             with col_r1: x_min = st.number_input("X-Axis Minimum", value=min_tp - margin)
             with col_r2: x_max = st.number_input("X-Axis Maximum", value=max_tp + margin)
 
-    summary_df = final_df.groupby(['Group', 'Timepoint_Weeks'])[plot_metric].agg(['mean', 'sem']).reset_index()
-    summary_df = summary_df.rename(columns={'mean': plot_metric, 'sem': 'SEM'}).sort_values(by='Timepoint_Weeks')
+    summary_df = final_df.groupby(['Group', 'Timepoint Weeks'])[plot_metric].agg(['mean', 'sem']).reset_index()
+    summary_df = summary_df.rename(columns={'mean': plot_metric, 'sem': 'SEM'}).sort_values(by='Timepoint Weeks')
     title_text = f"Longitudinal Progression of {plot_metric}"
 
     if plot_format == "Line Plot":
-        fig = px.line(summary_df, x='Timepoint_Weeks', y=plot_metric, color='Group', markers=True, error_y='SEM' if show_error_bars else None, title=title_text, color_discrete_map=color_map)
+        fig = px.line(summary_df, x='Timepoint Weeks', y=plot_metric, color='Group', markers=True, error_y='SEM' if show_error_bars else None, title=title_text, color_discrete_map=color_map)
     elif plot_format == "Bar Plot":
-        fig = px.bar(summary_df, x='Timepoint_Weeks', y=plot_metric, color='Group', barmode='group', error_y='SEM' if show_error_bars else None, title=title_text, color_discrete_map=color_map)
+        fig = px.bar(summary_df, x='Timepoint Weeks', y=plot_metric, color='Group', barmode='group', error_y='SEM' if show_error_bars else None, title=title_text, color_discrete_map=color_map)
     elif plot_format == "Box Plot":
-        fig = px.box(final_df, x='Timepoint_Weeks', y=plot_metric, color='Group', points="all" if show_points else False, title=title_text, color_discrete_map=color_map)
+        fig = px.box(final_df, x='Timepoint Weeks', y=plot_metric, color='Group', points="all" if show_points else False, title=title_text, color_discrete_map=color_map)
     elif plot_format == "Violin Plot":
-        fig = px.violin(final_df, x='Timepoint_Weeks', y=plot_metric, color='Group', box=True, points="all" if show_points else False, title=title_text, color_discrete_map=color_map)
+        fig = px.violin(final_df, x='Timepoint Weeks', y=plot_metric, color='Group', box=True, points="all" if show_points else False, title=title_text, color_discrete_map=color_map)
     
     # This is working with engine 2 - continuous math for growth curve functions, but it's not relevant to the current project. Leaving it commented out for future reference. 
     # ------------------------------------------------------------------------------------------------------------------------------------------------------------------------#   
@@ -657,7 +682,7 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
     #         fig.add_scatter(x=x_continuous, y=y_continuous, mode='lines', name=f"{grp} f(x) Trend", line=dict(color=line_color, width=3, dash='dot'), showlegend=True)
 
     xaxis_dict = dict(type='linear')
-    if force_exact_ticks: xaxis_dict['tickvals'] = sorted(final_df['Timepoint_Weeks'].unique())
+    if force_exact_ticks: xaxis_dict['tickvals'] = sorted(final_df['Timepoint Weeks'].unique())
     if custom_x_range: xaxis_dict['range'] = [x_min, x_max]
     fig.update_layout(xaxis=xaxis_dict)
 
@@ -670,7 +695,7 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
         if p_col:
             highest_drawn_y = y_max_overall
             for _, row in display_posthocs.iterrows():
-                tp = row['Timepoint_Weeks']
+                tp = row['Timepoint Weeks']
                 raw_pval = str(row[p_col]).replace('<', '').replace('>', '').replace('=', '').strip()
                 try:
                     pval = float(raw_pval)
@@ -680,11 +705,11 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
                     else: star = "ns" 
                     
                     if plot_format in ["Line Plot", "Bar Plot"] and show_error_bars:
-                        tp_summary = summary_df[summary_df['Timepoint_Weeks'].astype(str) == str(tp)]
+                        tp_summary = summary_df[summary_df['Timepoint Weeks'].astype(str) == str(tp)]
                         if tp_summary.empty: continue
                         y_highest_tp = (tp_summary[plot_metric] + tp_summary['SEM'].fillna(0)).max()
                     else:
-                        tp_raw = final_df[final_df['Timepoint_Weeks'].astype(str) == str(tp)][plot_metric]
+                        tp_raw = final_df[final_df['Timepoint Weeks'].astype(str) == str(tp)][plot_metric]
                         if tp_raw.empty: continue
                         y_highest_tp = tp_raw.max()
 
@@ -696,11 +721,29 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
                     
             fig.update_layout(yaxis=dict(range=[y_min_overall - (offset * 0.5), highest_drawn_y + (offset * 1.5)]))
 
-    fig.update_layout(margin=dict(t=30))
-    fig.update_xaxes()
-    fig.update_yaxes()
+    # 1. Update the layout width
+    fig.update_layout(margin=dict(t=30), width=plot_width, height=plot_height, font=dict(
+        family="Segoe UI Semibold",
+        size=16,
+    ))
+    # Code for bold black colors
+    # fig.update_xaxes( tickfont=dict(color="#000000", size=14), title_font=dict(color="#000000", size=16)) 
+    # fig.update_yaxes( tickfont=dict(color="#000000", size=14), title_font=dict(color="#000000", size=16))
 
-    st.plotly_chart(fig, width='stretch')
+
+    # 2. Dynamically fetch the user's browser width
+    # Note: It briefly returns 0 on the very first page load, so we keep 1400 as a safe split-second fallback
+    client_width = st_javascript("window.innerWidth", key="js_width_tab4")
+    screen_width = client_width if client_width > 0 else 1400 
+    
+    # 3. Calculate the exact margins based on their actual screen!
+    margin_size = max((screen_width - plot_width) / 2, 1) 
+    
+    # 4. Create the dynamic columns
+    col_left, col_center, col_right = st.columns([margin_size, plot_width, margin_size])
+    
+    with col_center:
+        st.plotly_chart(fig, width="content")
 
 # --- JOBLIB THREADING FUNCTION FOR EXPORT ---
 def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict):
@@ -712,13 +755,13 @@ def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot
     if loop_df.empty or loop_df['Group'].nunique() < 2:
         return None, None
     
-    loop_summary = loop_df.groupby(['Group', 'Timepoint_Weeks'])[metric].agg(['mean', 'sem']).reset_index()
-    loop_summary = loop_summary.rename(columns={'mean': metric, 'sem': 'SEM'}).sort_values(by='Timepoint_Weeks')
+    loop_summary = loop_df.groupby(['Group', 'Timepoint Weeks'])[metric].agg(['mean', 'sem']).reset_index()
+    loop_summary = loop_summary.rename(columns={'mean': metric, 'sem': 'SEM'}).sort_values(by='Timepoint Weeks')
     title_text = f"Longitudinal Progression of {metric}"
     
     batch_posthocs = pd.DataFrame()
     rows = []
-    loop_df['_tp_numeric_'] = pd.to_numeric(loop_df['Timepoint_Weeks'], errors='coerce')
+    loop_df['_tp_numeric_'] = pd.to_numeric(loop_df['Timepoint Weeks'], errors='coerce')
     
     for tp in selected_plot_timepoints:
         try: tp_num = float(tp)
@@ -732,12 +775,12 @@ def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot
             try:
                 res = pg.ttest(g1, g2)
                 p_col = next((c for c in res.columns if c.lower() in ['p-val', 'pval', 'p_val', 'p']), None)
-                if p_col: rows.append({'Timepoint_Weeks': tp_num, 'p_val': float(res[p_col].iloc[0])})
+                if p_col: rows.append({'Timepoint Weeks': tp_num, 'p_val': float(res[p_col].iloc[0])})
             except: 
                 try:
                     res = pg.mwu(g1, g2)
                     p_col = next((c for c in res.columns if c.lower() in ['p-val', 'pval', 'p_val', 'p']), None)
-                    if p_col: rows.append({'Timepoint_Weeks': tp_num, 'p_val': float(res[p_col].iloc[0])})
+                    if p_col: rows.append({'Timepoint Weeks': tp_num, 'p_val': float(res[p_col].iloc[0])})
                 except: pass
     
     if rows:
@@ -746,17 +789,17 @@ def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot
             _, p_corr = pg.multicomp(batch_posthocs['p_val'].values, method='holm')
             batch_posthocs['p_val'] = p_corr
 
-    loop_fig = px.line(loop_summary, x='Timepoint_Weeks', y=metric, color='Group', markers=True, error_y='SEM', title=title_text, labels={'Timepoint_Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map)
+    loop_fig = px.line(loop_summary, x='Timepoint Weeks', y=metric, color='Group', markers=True, error_y='SEM', title=title_text, labels={'Timepoint Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map)
     loop_fig.update_layout(xaxis=xaxis_dict)
     
     if not batch_posthocs.empty:
         y_max_overall, y_min_overall = loop_df[metric].max(), loop_df[metric].min()
         offset = (y_max_overall - y_min_overall) * 0.08 if y_max_overall != y_min_overall else (y_max_overall * 0.05)
         highest_drawn_y = y_max_overall
-        loop_summary['_tp_numeric_'] = pd.to_numeric(loop_summary['Timepoint_Weeks'], errors='coerce')
+        loop_summary['_tp_numeric_'] = pd.to_numeric(loop_summary['Timepoint Weeks'], errors='coerce')
 
         for _, row in batch_posthocs.iterrows():
-            tp_num, pval = float(row['Timepoint_Weeks']), float(row['p_val'])
+            tp_num, pval = float(row['Timepoint Weeks']), float(row['p_val'])
             if pval < 0.001: star = "***"
             elif pval < 0.01: star = "**"
             elif pval < 0.05: star = "*"
@@ -777,7 +820,7 @@ def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot
     loop_fig.update_xaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
     loop_fig.update_yaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
     
-    img_bytes = loop_fig.to_image(format="png", width=1200, height=800, scale=2)
+    img_bytes = loop_fig.to_image(format="png", width=plot_width, height=plot_height, scale=2)
     safe_metric = "".join([c for c in metric if c.isalpha() or c.isdigit() or c==' ']).rstrip()
     return safe_metric, img_bytes
 
@@ -787,21 +830,47 @@ uploaded_file = st.file_uploader("Upload your Cleaned Data File", type=['xlsx', 
 if uploaded_file:
     file_bytes = uploaded_file.read()
     
+    # Only process the file if it's new or not in session state
     if 'data_dict' not in st.session_state or st.session_state.get('uploaded_filename') != uploaded_file.name:
         st.session_state.data_dict = load_data(file_bytes, uploaded_file.name)
         st.session_state.sheet_names = list(st.session_state.data_dict.keys())
         st.session_state.uploaded_filename = uploaded_file.name
         
-        # Cleanup old session states
+        # Cleanup old session states from previous files
         keys_to_delete = ['mapping_df', 'group_definitions_final', 'run_stats']
         for key in keys_to_delete:
             if key in st.session_state:
                 del st.session_state[key]
         
-    data_dict = st.session_state.data_dict
+    raw_data_dict = st.session_state.data_dict
     sheet_names = st.session_state.sheet_names
 
     # --- SIDEBAR SETTINGS ---
+    st.sidebar.header("📏 Measurement Units")
+    distance_unit = st.sidebar.radio(
+        "Display Distance Units In:", 
+        ["Meters (m)", "Millimeters (mm)"],
+        help="Converts distance, velocity, and acceleration. Statistical significance remains identical."
+    )
+
+    # Apply Unit Conversion dynamically
+    # We do NOT overwrite st.session_state.data_dict here so the user can freely toggle back and forth!
+    data_dict = {}
+    for sheet, df in raw_data_dict.items():
+        df_converted = df.copy()
+        if distance_unit == "Millimeters (mm)":
+            for col in df_converted.columns:
+                # Target distances (m), velocities (m/s), and accelerations (m/s²)
+                if col.endswith("(m)") or col.endswith("(m/s)") or col.endswith("(m/s²)"):
+                    df_converted[col] = pd.to_numeric(df_converted[col], errors='coerce') * 1000
+                    
+                    # Safely rename columns so charts and dropdowns update automatically
+                    new_col = col.replace("(m)", "(mm)").replace("(m/s)", "(mm/s)").replace("(m/s²)", "(mm/s²)")
+                    df_converted.rename(columns={col: new_col}, inplace=True)
+                    
+        data_dict[sheet] = df_converted
+
+    st.sidebar.markdown("---")
     st.sidebar.header("🎨 Custom Group Colors")
     color_map = {}
     if 'mapping_df' in st.session_state:
@@ -818,6 +887,14 @@ if uploaded_file:
         "#000000", 
         help="Change this to White (#FFFFFF) if you are using Streamlit's Dark Mode so the asterisks are visible."
     )
+
+    # --- NEW DIMENSION CONTROLS ---
+    st.sidebar.markdown("---")
+    st.sidebar.header("📐 Plot Dimensions")
+    st.sidebar.subheader("These settings affect both the app display and the downloaded PNGs.")
+    plot_width = st.sidebar.slider("Plot Width (Pixels)", min_value=600, max_value=2400, value=1000, step=50, help="Controls the width of the plots in the app and the downloaded PNGs.")
+    plot_height = st.sidebar.slider("Plot Height (Pixels)", min_value=400, max_value=1600, value=600, step=50, help="Controls the height of the plots in the app and the downloaded PNGs.")
+
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Data Viewer", 
@@ -916,7 +993,7 @@ if uploaded_file:
                 for grp in matched_groups:
                     mapping_records.append({
                         "Ids": id_str,
-                        "Timepoint_Weeks": timepoint,
+                        "Timepoint Weeks": timepoint,
                         "Subject_ID": subject_id,
                         "Group": grp
                     })
@@ -955,7 +1032,7 @@ if uploaded_file:
                 debug_df = st.session_state.mapping_df
                 
                 unknown_groups = debug_df[debug_df['Group'] == 'Unknown']
-                missing_timepoints = debug_df[debug_df['Timepoint_Weeks'].isna()]
+                missing_timepoints = debug_df[debug_df['Timepoint Weeks'].isna()]
                 
                 col_d1, col_d2 = st.columns(2)
                 
@@ -997,7 +1074,7 @@ if uploaded_file:
                 plot_metric = st.selectbox("Select Measurement to Analyze:", numeric_cols, key="plot_metric_select")
             
             all_groups = sorted([g for g in mapping_df['Group'].unique() if g != "Unknown"])
-            all_timepoints = sorted(mapping_df['Timepoint_Weeks'].dropna().unique())
+            all_timepoints = sorted(mapping_df['Timepoint Weeks'].dropna().unique())
             
             col_grp, col_tp = st.columns(2)
             with col_grp:
@@ -1023,7 +1100,7 @@ if uploaded_file:
                 # --- DATA PREPARATION (Optimized with Polars) ---
                 mapping_filtered = mapping_df[
                     (mapping_df['Group'].isin(selected_plot_groups)) & 
-                    (mapping_df['Timepoint_Weeks'].isin(selected_plot_timepoints))
+                    (mapping_df['Timepoint Weeks'].isin(selected_plot_timepoints))
                 ]
                 
                 merged_pl = (
@@ -1031,14 +1108,14 @@ if uploaded_file:
                     .join(pl.from_pandas(mapping_filtered), on='Ids', how='inner')
                     .with_columns(pl.col(plot_metric).cast(pl.Float64, strict=False))
                     .drop_nulls(subset=[plot_metric])
-                    .group_by(['Subject_ID', 'Group', 'Timepoint_Weeks'])
+                    .group_by(['Subject_ID', 'Group', 'Timepoint Weeks'])
                     .agg(pl.col(plot_metric).mean())
                 )
                 final_df = merged_pl.to_pandas()
 
                 final_df['_metric_'] = final_df[plot_metric].astype(float)
-                final_df['_time_'] = final_df['Timepoint_Weeks'].astype(str)
-                final_df['_time_cont_'] = final_df['Timepoint_Weeks'].astype(float) 
+                final_df['_time_'] = final_df['Timepoint Weeks'].astype(str)
+                final_df['_time_cont_'] = final_df['Timepoint Weeks'].astype(float) 
                 final_df['_group_'] = final_df['Group'].astype(str)
 
                 # --- CALL CACHED STATS ENGINE (AUTO-RUN) ---
@@ -1058,7 +1135,9 @@ if uploaded_file:
                         color_map, 
                         plot_metric, 
                         selected_plot_timepoints, 
-                        annotation_color
+                        annotation_color,
+                        plot_width,
+                        plot_height
                     )
 
 
@@ -1080,7 +1159,8 @@ if uploaded_file:
                     results = Parallel(n_jobs=-1, backend="loky")(
                         delayed(render_single_metric_job)(
                             metric, df_to_plot, mapping_filtered, 
-                            selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict
+                            selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict,
+                            plot_width, plot_height
                         ) for metric in numeric_cols
                     )
                     
@@ -1121,7 +1201,7 @@ if uploaded_file:
                 plot_metric_m = st.selectbox("Select Measurement to Analyze:", numeric_cols_m, key="plot_metric_select_multi")
             
             all_groups_m = sorted([g for g in mapping_df['Group'].unique() if g != "Unknown"])
-            all_timepoints_m = sorted(mapping_df['Timepoint_Weeks'].dropna().unique())
+            all_timepoints_m = sorted(mapping_df['Timepoint Weeks'].dropna().unique())
             
             col_grp_m, col_tp_m = st.columns(2)
             with col_grp_m:
@@ -1147,7 +1227,7 @@ if uploaded_file:
                 # --- DATA PREP ---
                 mapping_filt_m = mapping_df[
                     (mapping_df['Group'].isin(selected_multi_groups)) & 
-                    (mapping_df['Timepoint_Weeks'].isin(selected_multi_tps))
+                    (mapping_df['Timepoint Weeks'].isin(selected_multi_tps))
                 ]
                 
                 merged_pl_m = (
@@ -1155,7 +1235,7 @@ if uploaded_file:
                     .join(pl.from_pandas(mapping_filt_m), on='Ids', how='inner')
                     .with_columns(pl.col(plot_metric_m).cast(pl.Float64, strict=False))
                     .drop_nulls(subset=[plot_metric_m])
-                    .group_by(['Subject_ID', 'Group', 'Timepoint_Weeks'])
+                    .group_by(['Subject_ID', 'Group', 'Timepoint Weeks'])
                     .agg(pl.col(plot_metric_m).mean())
                 )
                 final_df_m = merged_pl_m.to_pandas()
@@ -1171,17 +1251,31 @@ if uploaded_file:
                     else:
                         show_pts_m = st.checkbox("Show all data points", value=False, key="multi_pts")
 
-                summary_df_m = final_df_m.groupby(['Group', 'Timepoint_Weeks'])[plot_metric_m].agg(['mean', 'sem']).reset_index()
-                summary_df_m = summary_df_m.rename(columns={'mean': plot_metric_m, 'sem': 'SEM'}).sort_values(by='Timepoint_Weeks')
+                summary_df_m = final_df_m.groupby(['Group', 'Timepoint Weeks'])[plot_metric_m].agg(['mean', 'sem']).reset_index()
+                summary_df_m = summary_df_m.rename(columns={'mean': plot_metric_m, 'sem': 'SEM'}).sort_values(by='Timepoint Weeks')
                 title_text_m = f"Omnibus Progression of {plot_metric_m}"
 
                 if plot_format_m == "Line Plot":
-                    fig_m = px.line(summary_df_m, x='Timepoint_Weeks', y=plot_metric_m, color='Group', markers=True, error_y='SEM' if show_error_m else None, title=title_text_m, color_discrete_map=color_map)
+                    fig_m = px.line(summary_df_m, x='Timepoint Weeks', y=plot_metric_m, color='Group', markers=True, error_y='SEM' if show_error_m else None, title=title_text_m, color_discrete_map=color_map)
                 else:
-                    fig_m = px.box(final_df_m, x='Timepoint_Weeks', y=plot_metric_m, color='Group', points="all" if show_pts_m else False, title=title_text_m, color_discrete_map=color_map)
+                    fig_m = px.box(final_df_m, x='Timepoint Weeks', y=plot_metric_m, color='Group', points="all" if show_pts_m else False, title=title_text_m, color_discrete_map=color_map)
 
-                fig_m.update_layout(margin=dict(t=30), xaxis=dict(type='linear', tickvals=sorted(selected_multi_tps)))
-                st.plotly_chart(fig_m, width='stretch')
+                fig_m.update_layout(margin=dict(t=30), xaxis=dict(type='linear', tickvals=sorted(selected_multi_tps)),width=plot_width, height=plot_height)
+                # 1. Update the layout width
+                
+                # 2. Dynamically fetch the user's browser width
+                # Note: It briefly returns 0 on the very first page load, so we keep 1400 as a safe split-second fallback
+                client_width = st_javascript("window.innerWidth", key="js_width_tab5")
+                screen_width = client_width if client_width > 0 else 1400 
+                
+                # 3. Calculate the exact margins based on their actual screen!
+                margin_size = max((screen_width - plot_width) / 2, 1) 
+                
+                # 4. Create the dynamic columns
+                col_left, col_center, col_right = st.columns([margin_size, plot_width, margin_size])
+                
+                with col_center:
+                    st.plotly_chart(fig_m, width="content")
 
                 # --- STATS: OMNIBUS & POST-HOC HEATMAP TABLE ---
                 st.markdown("### Post-Hoc Pairwise Comparisons (FDR-Corrected)")
@@ -1189,7 +1283,7 @@ if uploaded_file:
                 
                 posthoc_rows = []
                 for tp in selected_multi_tps:
-                    tp_data = final_df_m[final_df_m['Timepoint_Weeks'] == tp]
+                    tp_data = final_df_m[final_df_m['Timepoint Weeks'] == tp]
                     if tp_data['Group'].nunique() >= 2:
                         try:
                             # Use pingouin's pairwise tests for quick, comprehensive multi-group post-hocs
@@ -1202,7 +1296,7 @@ if uploaded_file:
                             if p_unc_col:
                                 for _, row in pt.iterrows():
                                     posthoc_rows.append({
-                                        'Timepoint_Weeks': tp,
+                                        'Timepoint Weeks': tp,
                                         'Group A': row['A'],
                                         'Group B': row['B'],
                                         'p_uncorrected': row[p_unc_col],
@@ -1252,7 +1346,7 @@ if uploaded_file:
             
             all_groups = st.session_state.mapping_df['Group'].unique()
             all_groups = sorted([g for g in all_groups if g != "Unknown"])
-            all_timepoints = sorted(st.session_state.mapping_df['Timepoint_Weeks'].dropna().unique())
+            all_timepoints = sorted(st.session_state.mapping_df['Timepoint Weeks'].dropna().unique())
             
             col_rg, col_rt = st.columns(2)
             with col_rg:
@@ -1285,7 +1379,7 @@ if uploaded_file:
                     mapping_df = st.session_state.mapping_df.copy()
                     if st.session_state.get('exclude_subjects_ui'):
                         mapping_df = mapping_df[~mapping_df['Subject_ID'].isin(st.session_state.exclude_subjects_ui)]
-                    mapping_radar = mapping_df[(mapping_df['Group'].isin(radar_groups)) & (mapping_df['Timepoint_Weeks'] == radar_tp)]
+                    mapping_radar = mapping_df[(mapping_df['Group'].isin(radar_groups)) & (mapping_df['Timepoint Weeks'] == radar_tp)]
                     
                     if mapping_radar.empty:
                         st.warning(f"No valid group mappings found for timepoint {radar_tp} Weeks.")
@@ -1359,6 +1453,8 @@ if uploaded_file:
                             paper_bgcolor="white", 
                             plot_bgcolor="white",
                             polar=polar_config,
+                            width=plot_width, 
+                            height=plot_height,
                             title=dict(
                                 text=f"Kinematic Profile at {radar_tp} Weeks {'(Normalized ' + radar_sheet + ')' if normalize_radar else '(Raw Values ' + radar_sheet + ')'}<br><sup style='color: dimgrey;'>{groups_str}</sup>",
                                 font=dict(color="black", size=18)
@@ -1369,7 +1465,8 @@ if uploaded_file:
                             )
                         )
                         
-                        st.plotly_chart(fig_radar, width='stretch')
+                        
+                        st.plotly_chart(fig_radar, width="stretch")
             st.markdown("---")
             st.markdown("##### ❗Important Note:")
             st.markdown("Every time any color, group, timepoint, or metric selection is changed, your current radar plot generated will disappear and you will need to generate the radar plot again using the **Generate Radar Plot** button to update the visualization. This ensures that the plot accurately reflects your current selections and allows you to explore different combinations of metrics and groups effectively.", text_alignment="justify")
