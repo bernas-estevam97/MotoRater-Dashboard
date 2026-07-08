@@ -266,15 +266,14 @@ def load_data(file_bytes: bytes, filename: str) -> dict:
             for sheet in xls.sheet_names
         }
 
-# --- CACHED STATS ENGINE ---
-@st.cache_data(show_spinner="Running statistics (Cached)...")
-def run_longitudinal_stats(final_df_json: str, plot_metric: str, selected_groups: tuple, selected_timepoints: tuple):
+
+def run_longitudinal_stats(final_df: str, plot_metric: str, selected_groups: tuple, selected_timepoints: tuple):
     """
     Cached statistical pipeline. Streamlit will replay the UI elements generated within this function.
     """
     import warnings
     warnings.filterwarnings("ignore", message=".*Random effects covariance is singular.*", category=UserWarning)
-    final_df = pd.read_json(io.StringIO(final_df_json), orient='records')
+
     display_posthocs = pd.DataFrame()
     function_dict = {}
     
@@ -1153,7 +1152,7 @@ if uploaded_file:
 
                 # --- CALL CACHED STATS ENGINE (AUTO-RUN) ---
                 display_posthocs, function_dict = run_longitudinal_stats(
-                    final_df.to_json(orient='records'),
+                    final_df,
                     plot_metric,
                     tuple(selected_plot_groups),
                     tuple(selected_plot_timepoints)
