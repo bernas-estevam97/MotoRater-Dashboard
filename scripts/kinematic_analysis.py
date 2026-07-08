@@ -114,6 +114,11 @@ th {
 
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide") 
+# FETCH SCREEN WIDTH GLOBALLY (Prevents Tab Corruption Bug)
+client_width = st_javascript("window.innerWidth", key="global_js_width")
+# Store in session state to use anywhere in the app
+st.session_state.screen_width = client_width if client_width > 0 else 1400
+
 st.title("🐁 Kinematics Longitudinal Analyzer")
 
 column_rename_map = {
@@ -620,8 +625,7 @@ def run_longitudinal_stats(final_df: str, plot_metric: str, selected_groups: tup
                     
     return display_posthocs, function_dict
 
-# --- STREAMLIT FRAGMENT FOR PLOTTING ---
-@st.fragment
+
 def render_plot_section(final_df, display_posthocs, function_dict, color_map, plot_metric, selected_plot_timepoints, annotation_color, plot_width, plot_height):
     """Isolated rerun fragment for rendering plots instantly without recalculating stats/data."""
     col_p1, col_p2, col_p3 = st.columns(3)
@@ -735,7 +739,6 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
 
     # 2. Dynamically fetch the user's browser width
     # Note: It briefly returns 0 on the very first page load, so we keep 1400 as a safe split-second fallback
-    client_width = st_javascript("window.innerWidth", key="js_width_tab4")
     screen_width = client_width if client_width > 0 else 1400 
     
     # 3. Calculate the exact margins based on their actual screen!
@@ -1301,13 +1304,11 @@ if uploaded_file:
                 fig_m.update_layout(margin=dict(t=30), xaxis=dict(type='linear', tickvals=sorted(selected_multi_tps)),width=plot_width, height=plot_height)
                 # 1. Update the layout width
                 
-                # 2. Dynamically fetch the user's browser width
-                # Note: It briefly returns 0 on the very first page load, so we keep 1400 as a safe split-second fallback
-                client_width = st_javascript("window.innerWidth", key="js_width_tab5")
-                screen_width = client_width if client_width > 0 else 1400 
-                
+                # 2. Use the globally fetched screen width
+                screen_width = st.session_state.screen_width
+                                
                 # 3. Calculate the exact margins based on their actual screen!
-                margin_size = max((screen_width - plot_width) / 2, 1) 
+                margin_size = max((screen_width - plot_width) / 2, 1)
                 
                 # 4. Create the dynamic columns
                 col_left, col_center, col_right = st.columns([margin_size, plot_width, margin_size])
