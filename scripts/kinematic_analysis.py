@@ -704,21 +704,14 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
                     
             fig.update_layout(yaxis=dict(range=[y_min_overall - (offset * 0.5), highest_drawn_y + (offset * 1.5)]))
 
-    # 1. Update the layout (REMOVED width=plot_width to prevent tab shattering)
-    # We keep height because vertical scrolling is safe and doesn't break tabs.
-    fig.update_layout(
-        margin=dict(t=30), 
-        height=plot_height, 
-        font=dict(family="Segoe UI Semibold", size=16)
-    )
+    # Apply the user's explicit sidebar dimensions
+    fig.update_layout(margin=dict(t=30), width=plot_width, height=plot_height, font=dict(family="Segoe UI Semibold", size=16))
 
-    # 2. Render safely using native Streamlit container width.
-    # The unique key forces Streamlit to safely rebuild the chart without corrupting the DOM.
-    st.plotly_chart(
-        fig, 
-        use_container_width=True, 
-        key=f"plot_tab4_{plot_metric}_{plot_format}"
-    )
+    # Render safely without Javascript. Using a spacer column pattern to keep it roughly centered.
+    # We set use_container_width=False so Plotly strictly obeys your pixel width slider.
+    col_left, col_center, col_right = st.columns([1, 6, 1])
+    with col_center:
+        st.plotly_chart(fig, width='content')
 
 # --- JOBLIB THREADING FUNCTION FOR EXPORT ---
 def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict, plot_width, plot_height):
@@ -1271,19 +1264,19 @@ if uploaded_file:
                 else:
                     fig_m = px.box(final_df_m, x='Timepoint Weeks', y=plot_metric_m, color='Group', points="all" if show_pts_m else False, title=title_text_m, color_discrete_map=color_map)
 
-                # 1. Update layout safely
+                # Apply the user's explicit sidebar dimensions
                 fig_m.update_layout(
                     margin=dict(t=30), 
                     xaxis=dict(type='linear', tickvals=sorted(selected_multi_tps)),
+                    width=plot_width, 
                     height=plot_height
                 )
                 
-                # 2. Render safely
-                st.plotly_chart(
-                    fig_m, 
-                    use_container_width=True, 
-                    key=f"plot_tab5_{plot_metric_m}_{plot_format_m}"
-                )
+                # Render safely without Javascript.
+                # use_container_width=False forces Streamlit to respect your exact width/height sliders.
+                col_left, col_center, col_right = st.columns([1, 6, 1])
+                with col_center:
+                    st.plotly_chart(fig_m, width='content')
 
                 # --- STATS: OMNIBUS & POST-HOC HEATMAP TABLE ---
                 st.markdown("### Post-Hoc Pairwise Comparisons (FDR-Corrected)")
@@ -1461,7 +1454,8 @@ if uploaded_file:
                             paper_bgcolor="white", 
                             plot_bgcolor="white",
                             polar=polar_config,
-                            height=plot_height,  # Explicit height only
+                            width=plot_width, 
+                            height=plot_height,
                             title=dict(
                                 text=f"Kinematic Profile at {radar_tp} Weeks {'(Normalized ' + radar_sheet + ')' if normalize_radar else '(Raw Values ' + radar_sheet + ')'}<br><sup style='color: dimgrey;'>{groups_str}</sup>",
                                 font=dict(color="black", size=18)
@@ -1472,13 +1466,8 @@ if uploaded_file:
                             )
                         )
                         
-                        # Render safely
-                        safe_radar_key = "_".join(radar_metrics)[:20] # Create a safe unique string
-                        st.plotly_chart(
-                            fig_radar, 
-                            use_container_width=True, 
-                            key=f"plot_tab6_{radar_tp}_{safe_radar_key}"
-                        )
+                        
+                        st.plotly_chart(fig_radar, width="stretch")
             st.markdown("---")
             st.markdown("##### ❗Important Note:")
             st.markdown("Every time any color, group, timepoint, or metric selection is changed, your current radar plot generated will disappear and you will need to generate the radar plot again using the **Generate Radar Plot** button to update the visualization. This ensures that the plot accurately reflects your current selections and allows you to explore different combinations of metrics and groups effectively.", text_alignment="justify")
