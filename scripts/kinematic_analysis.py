@@ -746,11 +746,14 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
         st.plotly_chart(fig, width="content")
 
 # --- JOBLIB THREADING FUNCTION FOR EXPORT ---
-def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict):
+def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict, plot_width, plot_height):
     """Isolated function for multithreading the export sequence."""
-    loop_merged = pd.merge(df_to_plot[['Ids', metric]], mapping_filtered, on='Ids')
-    loop_merged[metric] = pd.to_numeric(loop_merged[metric], errors='coerce')
-    loop_df = loop_merged.dropna(subset=[metric]).copy()
+    loop_df = merged_df[
+        ["Ids", "Group", "Timepoint Weeks", metric]
+    ].copy()
+
+    loop_df[metric] = pd.to_numeric(loop_df[metric], errors="coerce")
+    loop_df = loop_df.dropna(subset=[metric])
     
     if loop_df.empty or loop_df['Group'].nunique() < 2:
         return None, None
@@ -1155,10 +1158,16 @@ if uploaded_file:
                     
                     xaxis_dict = dict(type='linear', tickvals=sorted(selected_plot_timepoints))
                     
-                    # Swapped backend to 'loky' (multiprocessing) to prevent Kaleido browser crashes
-                    results = Parallel(n_jobs=-1, backend="loky")(
+                    # Merge once instead of inside every worker
+                    merged_df = pd.merge(
+                        df_to_plot,
+                        mapping_filtered,
+                        on="Ids"
+                    )
+                    # Swapped backend to 'loky' to prevent Kaleido browser crashes
+                    results = Parallel(n_jobs=2, backend="loky", prefers="threads")(
                         delayed(render_single_metric_job)(
-                            metric, df_to_plot, mapping_filtered, 
+                            metric, merged_df, mapping_filtered, 
                             selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict,
                             plot_width, plot_height
                         ) for metric in numeric_cols
