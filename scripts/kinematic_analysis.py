@@ -5,7 +5,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 import re
 import pingouin as pg
-import traceback
 import statsmodels.formula.api as smf
 import statsmodels.api as sm
 import io
@@ -13,22 +12,26 @@ import zipfile
 import scipy.stats as stats
 import polars as pl
 from joblib import Parallel, delayed
-import json
 from statsmodels.stats.multitest import multipletests
 import re
 # Suppress warnings
 import warnings
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
+import matplotlib
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
+import io
 
 warnings.simplefilter('ignore', ConvergenceWarning)
-# Suppress Plotly/Kaleido specific environment warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning, message="(?i).*kaleido.*")
-warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*Kaleido.*")
 # Suppress grid=True FutureWarning
 warnings.filterwarnings("ignore", category=FutureWarning, message=".*grid=True.*")
 
-# Catch-all just in case
-warnings.filterwarnings("ignore", message="(?i).*kaleido.*")
+
+
+
+
+CORRECTION_METHOD = 'holm'
 
 # --- PLOTLY STATS FUNCTION (For Box Plots in Tab 5) ---
 def add_plotly_significance_brackets(fig, df, posthocs_df, x_col, y_col, text_color="black"):
@@ -473,7 +476,7 @@ def run_longitudinal_stats(final_df: str, plot_metric: str, selected_groups: tup
                         # perfectly matching GraphPad Prism's marginal mean post-hoc methodology.
                         display_posthocs = run_pairwise_contrasts(
                             base_model_cat, final_df, selected_timepoints,
-                            ref_group=groups_sorted[0], test_group=groups_sorted[1], method='sidak'
+                            ref_group=groups_sorted[0], test_group=groups_sorted[1], method=CORRECTION_METHOD
                         )
                     except Exception as e:
                         st.error(f"ANOVA Failed: {e}")
@@ -499,7 +502,7 @@ def run_longitudinal_stats(final_df: str, plot_metric: str, selected_groups: tup
                         groups_sorted = sorted(final_df['_group_'].unique())
                         display_posthocs = run_pairwise_contrasts(
                             base_model_cat, final_df, selected_timepoints,
-                            ref_group=groups_sorted[0], test_group=groups_sorted[1], method='sidak'
+                            ref_group=groups_sorted[0], test_group=groups_sorted[1], method=CORRECTION_METHOD
                         )
                     except Exception as e:
                         st.error(f"LMM Failed: {e}")
@@ -570,7 +573,7 @@ def run_longitudinal_stats(final_df: str, plot_metric: str, selected_groups: tup
                         # Leverage your existing matrix-based helper function to bypass string parsing errors
                         display_posthocs = run_pairwise_contrasts(
                             mdf, final_df, selected_timepoints,
-                            ref_group=groups_sorted[0], test_group=groups_sorted[1], method='holm'
+                            ref_group=groups_sorted[0], test_group=groups_sorted[1], method=CORRECTION_METHOD
                         )
                     except Exception as e:
                         st.error(f"GEE Failed: {e}")
@@ -718,121 +721,298 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
     st.plotly_chart(fig, width='content')
 
 # --- JOBLIB THREADING FUNCTION FOR EXPORT ---
-def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict, plot_width, plot_height, export_scale):
-    """Isolated function for multithreading the export sequence."""
-    
-    # FIX 1: Explicitly include 'Subject_ID' and use df_to_plot instead of the global merged_df
-    loop_df = df_to_plot[
-        ["Ids", "Subject_ID", "Group", "Timepoint Weeks", metric]
-    ].copy()
+# --- JOBLIB THREADING FUNCTION FOR EXPORT ---
+def render_single_metric_job(
+    metric,
+    df_to_plot,
+    mapping_filtered,
+    selected_plot_timepoints,
+    selected_plot_groups,
+    color_map,
+    xaxis_dict,
+    plot_width,
+    plot_height
+):
+    """Headless Matplotlib PNG renderer for batch export."""
+    import warnings
 
-    loop_df[metric] = pd.to_numeric(loop_df[metric], errors="coerce")
-    loop_df = loop_df.dropna(subset=[metric])
-    
+    loop_merged = pd.merge(
+        df_to_plot[['Ids', metric]],
+        mapping_filtered,
+        on='Ids'
+    )
+
+    loop_merged[metric] = pd.to_numeric(
+        loop_merged[metric],
+        errors='coerce'
+    )
+
+    loop_df = loop_merged.dropna(subset=[metric]).copy()
+
+    loop_df = (
+        loop_df
+        .groupby(
+            ['Subject_ID', 'Group', 'Timepoint Weeks'],
+            as_index=False
+        )[metric]
+        .mean()
+    )
+
     if loop_df.empty or loop_df['Group'].nunique() < 2:
         return None, None
-    
-    loop_summary = loop_df.groupby(['Group', 'Timepoint Weeks'])[metric].agg(['mean', 'sem']).reset_index()
-    loop_summary = loop_summary.rename(columns={'mean': metric, 'sem': 'SEM'}).sort_values(by='Timepoint Weeks')
+
+
+    loop_summary = (
+        loop_df
+        .groupby(['Group', 'Timepoint Weeks'])[metric]
+        .agg(['mean', 'sem'])
+        .reset_index()
+        .rename(columns={'mean': metric, 'sem': 'SEM'})
+        .sort_values(by='Timepoint Weeks')
+    )
+
+
     title_text = f"Longitudinal Progression of {metric}"
-    
-    # Prepare internal columns for the statistical engine
+
+
+    # -----------------------------
+    # STATS ENGINE (UNCHANGED)
+    # -----------------------------
+
     loop_df['_metric_'] = loop_df[metric].astype(float)
     loop_df['_time_'] = loop_df['Timepoint Weeks'].astype(str)
     loop_df['_group_'] = loop_df['Group'].astype(str)
-    loop_df['_tp_numeric_'] = pd.to_numeric(loop_df['Timepoint Weeks'], errors='coerce')
-    
-    batch_posthocs = pd.DataFrame()
 
-    # FIX 2: Replicate the LMM / T-Test logic from Tab 4 so batch plots match the UI perfectly
-    if len(selected_plot_timepoints) == 1:
-        # Cross-sectional logic (1 Timepoint)
-        tp = selected_plot_timepoints[0]
-        try:
-            tp_num = float(tp)
-            g1 = loop_df[loop_df['Group'] == selected_plot_groups[0]]['_metric_'].dropna()
-            g2 = loop_df[loop_df['Group'] == selected_plot_groups[1]]['_metric_'].dropna()
-            if len(g1) > 1 and len(g2) > 1:
-                res = pg.ttest(g1, g2)
-                p_col = next((c for c in res.columns if c.lower() in ['p-val', 'pval', 'p_val', 'p']), None)
-                if p_col:
-                    batch_posthocs = pd.DataFrame([{'Timepoint Weeks': tp_num, 'p_corr': float(res[p_col].iloc[0])}])
-        except Exception:
-            pass
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            base_model_cat = smf.mixedlm(
+                "_metric_ ~ C(_time_) * C(_group_)",
+                loop_df,
+                groups="Subject_ID"
+            ).fit(method='lbfgs')
+
+    except:
+        base_model_cat = smf.ols(
+            "_metric_ ~ C(_time_) * C(_group_)",
+            data=loop_df
+        ).fit()
+
+
+    groups_sorted = sorted(loop_df['_group_'].unique())
+
+    if len(groups_sorted) >= 2:
+        batch_posthocs = run_pairwise_contrasts(
+            base_model_cat,
+            loop_df,
+            selected_plot_timepoints,
+            ref_group=groups_sorted[0],
+            test_group=groups_sorted[1],
+            method=CORRECTION_METHOD
+        )
     else:
-        # Longitudinal logic (2+ Timepoints -> LMM)
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                model = smf.mixedlm("_metric_ ~ C(_time_) * C(_group_)", loop_df, groups="Subject_ID").fit(method='lbfgs')
-            groups_sorted = sorted(loop_df['_group_'].unique())
-            batch_posthocs = run_pairwise_contrasts(
-                model, loop_df, selected_plot_timepoints,
-                ref_group=groups_sorted[0], test_group=groups_sorted[1], method='sidak'
-            )
-        except Exception:
-            try:
-                # Fallback to OLS if MixedLM fails to converge
-                model = smf.ols("_metric_ ~ C(_time_) * C(_group_)", data=loop_df).fit()
-                groups_sorted = sorted(loop_df['_group_'].unique())
-                batch_posthocs = run_pairwise_contrasts(
-                    model, loop_df, selected_plot_timepoints,
-                    ref_group=groups_sorted[0], test_group=groups_sorted[1], method='sidak'
-                )
-            except Exception:
-                pass
+        batch_posthocs = pd.DataFrame()
 
-    # Plotting code remains structurally the same
-    loop_fig = px.line(loop_summary, x='Timepoint Weeks', y=metric, color='Group', markers=True, error_y='SEM', title=title_text, labels={'Timepoint Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map)
-    loop_fig.update_layout(xaxis=xaxis_dict)
-    
+
+    # -----------------------------
+    # MATPLOTLIB FIGURE
+    # -----------------------------
+
+    fig, ax = plt.subplots(
+        figsize=(
+            plot_width / 100,
+            plot_height / 100
+        ),
+        dpi=100
+    )
+
+
+    for group in sorted(loop_summary['Group'].unique()):
+
+        group_data = loop_summary[
+            loop_summary['Group'] == group
+        ]
+
+        ax.errorbar(
+            group_data['Timepoint Weeks'],
+            group_data[metric],
+            yerr=group_data['SEM'],
+            marker='o',
+            linewidth=2,
+            markersize=6,
+            capsize=4,
+            label=group,
+            color=color_map.get(group, None)
+        )
+
+
+    ax.set_title(
+        title_text,
+        fontsize=13,
+        color="black"
+    )
+
+    ax.set_xlabel(
+        "Timepoint (Weeks)",
+        color="black"
+    )
+
+    ax.set_ylabel(
+        metric,
+        color="black"
+    )
+
+
+    ax.set_xticks(
+        sorted(selected_plot_timepoints)
+    )
+
+
+    ax.tick_params(
+        colors="black"
+    )
+
+
+    ax.grid(
+        True,
+        color="lightgrey",
+        linewidth=0.8
+    )
+
+
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    ax.spines['left'].set_color("black")
+    ax.spines['bottom'].set_color("black")
+
+
+    ax.legend(
+        frameon=False
+    )
+
+
+    # -----------------------------
+    # SIGNIFICANCE ANNOTATIONS
+    # -----------------------------
+
     if not batch_posthocs.empty:
-        y_max_overall, y_min_overall = loop_df[metric].max(), loop_df[metric].min()
-        offset = (y_max_overall - y_min_overall) * 0.08 if y_max_overall != y_min_overall else (y_max_overall * 0.05)
+
+        y_max_overall = loop_df[metric].max()
+        y_min_overall = loop_df[metric].min()
+
+        offset = (
+            (y_max_overall - y_min_overall) * 0.08
+            if y_max_overall != y_min_overall
+            else abs(y_max_overall) * 0.05
+        )
+
         highest_drawn_y = y_max_overall
-        loop_summary['_tp_numeric_'] = pd.to_numeric(loop_summary['Timepoint Weeks'], errors='coerce')
-        
-        # Dynamically fetch the correct p-value column generated by either T-Test or MixedLM
-        p_col_found = next((c for c in batch_posthocs.columns if c.lower() in ['p_corr', 'p-corr', 'p_unc', 'p-unc', 'p_val', 'pval', 'p']), None)
-        
-        if p_col_found:
-            for _, row in batch_posthocs.iterrows():
-                tp_num = float(row['Timepoint Weeks'])
-                pval = float(row[p_col_found])
-                
-                if pd.isna(pval): continue
-                
-                if pval < 0.001: star = "***"
-                elif pval < 0.01: star = "**"
-                elif pval < 0.05: star = "*"
-                else: star = "ns"
 
-                tp_summary = loop_summary[loop_summary['_tp_numeric_'] == tp_num]
-                if tp_summary.empty: continue
-                y_highest_tp = float((tp_summary[metric] + tp_summary['SEM'].fillna(0)).max())
+        loop_summary['_tp_numeric_'] = pd.to_numeric(
+            loop_summary['Timepoint Weeks'],
+            errors='coerce'
+        )
 
-                y_pos = y_highest_tp + offset
-                if y_pos > highest_drawn_y: highest_drawn_y = y_pos
 
-                loop_fig.add_annotation(x=tp_num, y=float(y_pos), text=star, showarrow=False, font=dict(size=14 if star == "ns" else 22, color="#000000", family="Arial"))
+        p_col = (
+            'p_corr'
+            if 'p_corr' in batch_posthocs.columns
+            else 'p_unc'
+        )
 
-        loop_fig.update_layout(yaxis=dict(range=[y_min_overall - (offset * 0.5), highest_drawn_y + (offset * 1.5)]))
 
-    loop_fig.update_layout(margin=dict(t=30), paper_bgcolor="white", plot_bgcolor="white", font=dict(color="black"))
-    loop_fig.update_xaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
-    loop_fig.update_yaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
-    
-    # --- NEW FIX: Suppress warnings inside the isolated worker process ---
-    import warnings
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=DeprecationWarning, message="(?i).*kaleido.*")
-        warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*Kaleido.*")
-        
-        img_bytes = loop_fig.to_image(format="png", width=plot_width, height=plot_height, scale=export_scale)
-    # ---------------------------------------------------------------------
+        for _, row in batch_posthocs.iterrows():
 
-    safe_metric = "".join([c for c in metric if c.isalpha() or c.isdigit() or c==' ']).rstrip()
-    return safe_metric, img_bytes
+            if pd.isna(row.get(p_col)):
+                continue
+
+
+            tp_num = float(row['Timepoint Weeks'])
+            pval = float(row[p_col])
+
+
+            if pval < 0.001:
+                star = "***"
+            elif pval < 0.01:
+                star = "**"
+            elif pval < 0.05:
+                star = "*"
+            else:
+                star = "ns"
+
+
+            tp_summary = loop_summary[
+                loop_summary['_tp_numeric_'] == tp_num
+            ]
+
+            if tp_summary.empty:
+                continue
+
+
+            y_highest_tp = float(
+                (
+                    tp_summary[metric]
+                    +
+                    tp_summary['SEM'].fillna(0)
+                ).max()
+            )
+
+
+            y_pos = y_highest_tp + offset
+
+            if y_pos > highest_drawn_y:
+                highest_drawn_y = y_pos
+
+
+            ax.text(
+                tp_num,
+                y_pos,
+                star,
+                ha='center',
+                va='bottom',
+                fontsize=16 if star != "ns" else 12,
+                color="black"
+            )
+
+
+        ax.set_ylim(
+            y_min_overall - offset * 0.5,
+            highest_drawn_y + offset * 1.5
+        )
+
+
+    plt.tight_layout()
+
+
+    # -----------------------------
+    # EXPORT PNG BYTES
+    # -----------------------------
+
+    img_buffer = io.BytesIO()
+
+    fig.savefig(
+        img_buffer,
+        format="png",
+        dpi=300,
+        bbox_inches="tight",
+        facecolor="white"
+    )
+
+    plt.close(fig)
+
+    img_buffer.seek(0)
+
+
+    safe_metric = "".join(
+        [
+            c for c in metric
+            if c.isalpha() or c.isdigit() or c == ' '
+        ]
+    ).rstrip()
+
+
+    return safe_metric, img_buffer.getvalue()
 
 # --- 1. FILE UPLOAD ---
 uploaded_file = st.file_uploader("Upload your Cleaned Data File", type=['xlsx', 'h5', 'parquet', 'zip'])
@@ -1163,41 +1343,57 @@ if uploaded_file:
                 st.write("Generate and download a ZIP archive containing high-resolution **PNG** plots (with statistical significance) for **all** measurements in the current sheet.")
                 
                 if st.button("Generate All Plots (ZIP)", type="secondary"):
-                    total_metrics = len(numeric_cols)
-                    progress_bar = st.progress(0)
+                    progress_bar = st.progress(0.0)
                     status_text = st.empty()
-                    status_text.text(f"Starting generation of {total_metrics} plots...")
                     
                     zip_buffer = io.BytesIO()
-                    
                     xaxis_dict = dict(type='linear', tickvals=sorted(selected_plot_timepoints))
+                    total_plots = len(numeric_cols)
                     
-                    # Merge once instead of inside every worker
-                    merged_df = pd.merge(
-                        df_to_plot,
-                        mapping_filtered,
-                        on="Ids"
-                    )
+                    status_text.text(f"Spinning up export threads for {total_plots} plots...")
                     
-                    # FIX: Add return_as="generator" so joblib passes images to the loop as soon as they render
-                    results = Parallel(n_jobs=2, backend="loky", prefers="threads", return_as="generator")(
-                        delayed(render_single_metric_job)(
-                            metric, merged_df, mapping_filtered, 
-                            selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict,
-                            export_plot_width, export_plot_height, export_scale
-                        ) for metric in numeric_cols
-                    )
-                    
-                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                        for idx, (safe_metric, img_bytes) in enumerate(results):
-                            if img_bytes:
-                                zip_file.writestr(f"{safe_metric}.png", img_bytes)
+                    try:
+                        # backend="threading" prevents OS window popups by sharing the main process
+                        # return_as="generator" streams results in real-time
+                        results_generator = Parallel(n_jobs=-1, backend="loky", return_as="generator")(
+                            delayed(render_single_metric_job)(
+                                metric, df_to_plot, mapping_filtered, 
+                                selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict,
+                                export_plot_width, export_plot_height
+                            ) for metric in numeric_cols
+                        )
+                        
+                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                            for idx, (safe_metric, img_bytes) in enumerate(results_generator):
+                                if img_bytes:
+                                    zip_file.writestr(f"{safe_metric}.png", img_bytes)
+                                
+                                # Real-time UI Math
+                                completed = idx + 1
+                                remaining = total_plots - completed
+                                progress_fraction = completed / total_plots
+                                
+                                progress_bar.progress(progress_fraction)
+                                status_text.text(f"Rendering: {completed} / {total_plots} completed ({remaining} remaining)...")
+                                
+                    except TypeError:
+                        # Fallback for older environments with joblib < 1.3.0
+                        status_text.warning(f"Generating {total_plots} plots in background. Progress will update when all are complete.")
+                        results = Parallel(n_jobs=-1, backend="threading")(
+                            delayed(render_single_metric_job)(
+                                metric, df_to_plot, mapping_filtered, 
+                                selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict,
+                                export_plot_width, export_plot_height
+                            ) for metric in numeric_cols
+                        )
+                        
+                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                            for idx, (safe_metric, img_bytes) in enumerate(results):
+                                if img_bytes:
+                                    zip_file.writestr(f"{safe_metric}.png", img_bytes)
+                        progress_bar.progress(1.0)
                             
-                            # FIX: Dynamically update the progress bar and text UI
-                            progress_bar.progress((idx + 1) / total_metrics)
-                            status_text.text(f"✅ Generated {idx + 1} of {total_metrics} plots... ({safe_metric})")
-                            
-                    status_text.success(f"✅ All {total_metrics} plots generated successfully! Ready for download.")
+                    status_text.success("✅ All plots generated successfully! Ready for download.")
                     
                     st.download_button(
                         label="📥 Download PNG ZIP",
