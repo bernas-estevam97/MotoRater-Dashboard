@@ -13,3 +13,4 @@ python-calamine
 pandas-flavor
 xarray
 polars
+streamlit-javascript
