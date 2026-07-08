@@ -15,7 +15,6 @@ import polars as pl
 from joblib import Parallel, delayed
 import json
 from statsmodels.stats.multitest import multipletests
-from streamlit_javascript import st_javascript
 import re
 # Suppress warnings
 import warnings
@@ -114,10 +113,6 @@ th {
 
 # --- CONFIGURATION ---
 st.set_page_config(layout="wide") 
-# FETCH SCREEN WIDTH GLOBALLY (Prevents Tab Corruption Bug)
-client_width = st_javascript("window.innerWidth", key="global_js_width")
-# Store in session state to use anywhere in the app
-st.session_state.screen_width = client_width if client_width > 0 else 1400
 
 st.title("🐁 Kinematics Longitudinal Analyzer")
 
@@ -626,8 +621,8 @@ def run_longitudinal_stats(final_df: str, plot_metric: str, selected_groups: tup
     return display_posthocs, function_dict
 
 
-def render_plot_section(final_df, display_posthocs, function_dict, color_map, plot_metric, selected_plot_timepoints, annotation_color, plot_width, plot_height):
-    """Isolated rerun fragment for rendering plots instantly without recalculating stats/data."""
+# --- STREAMLIT FUNCTION FOR PLOTTING (Tab 4) ---
+def render_plot_section(final_df, display_posthocs, color_map, plot_metric, selected_plot_timepoints, annotation_color, plot_width, plot_height):
     col_p1, col_p2, col_p3 = st.columns(3)
     with col_p1:
         plot_format = st.selectbox("Plot Format:", ["Line Plot", "Bar Plot", "Box Plot", "Violin Plot"])
@@ -639,17 +634,9 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
             show_points = st.checkbox("Show all data points", value=True)
             show_error_bars = False
 
-    # This is working with engine 2 - continuous math for growth curve functions, but it's not relevant to the current project. Leaving it commented out for future reference. 
-    # ------------------------------------------------------------------------------------------------------------------------------------------------------------------------#       
-    # with col_p3:
-    #     show_pvals_on_line = st.checkbox("Draw significance asterisks on plot", value=True)
-    #     if plot_format == "Line Plot":
-    #         show_growth_curves = st.checkbox("Overlay continuous f(x) curve", value=True)
-    #     else:
-    #         show_growth_curves = False
-
     with col_p3:
         show_pvals_on_line = st.checkbox("Draw significance asterisks on plot", value=True)
+        
     with st.expander("⚙️ Advanced Plot Settings", expanded=False):
         col_x1, col_x2 = st.columns(2)
         with col_x1:
@@ -676,16 +663,6 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
         fig = px.box(final_df, x='Timepoint Weeks', y=plot_metric, color='Group', points="all" if show_points else False, title=title_text, color_discrete_map=color_map)
     elif plot_format == "Violin Plot":
         fig = px.violin(final_df, x='Timepoint Weeks', y=plot_metric, color='Group', box=True, points="all" if show_points else False, title=title_text, color_discrete_map=color_map)
-    
-    # This is working with engine 2 - continuous math for growth curve functions, but it's not relevant to the current project. Leaving it commented out for future reference. 
-    # ------------------------------------------------------------------------------------------------------------------------------------------------------------------------#   
-    # if plot_format == "Line Plot" and show_growth_curves and function_dict:
-    #     min_x, max_x = final_df['_time_cont_'].min(), final_df['_time_cont_'].max()
-    #     x_continuous = np.linspace(min_x, max_x, 100)
-    #     for grp, equation in function_dict.items():
-    #         y_continuous = (equation['m'] * x_continuous) + equation['b']
-    #         line_color = color_map.get(grp, 'gray')
-    #         fig.add_scatter(x=x_continuous, y=y_continuous, mode='lines', name=f"{grp} f(x) Trend", line=dict(color=line_color, width=3, dash='dot'), showlegend=True)
 
     xaxis_dict = dict(type='linear')
     if force_exact_ticks: xaxis_dict['tickvals'] = sorted(final_df['Timepoint Weeks'].unique())
@@ -727,31 +704,17 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
                     
             fig.update_layout(yaxis=dict(range=[y_min_overall - (offset * 0.5), highest_drawn_y + (offset * 1.5)]))
 
-    # 1. Update the layout width
-    fig.update_layout(margin=dict(t=30), width=plot_width, height=plot_height, font=dict(
-        family="Segoe UI Semibold",
-        size=16,
-    ))
-    # Code for bold black colors
-    # fig.update_xaxes( tickfont=dict(color="#000000", size=14), title_font=dict(color="#000000", size=16)) 
-    # fig.update_yaxes( tickfont=dict(color="#000000", size=14), title_font=dict(color="#000000", size=16))
+    # Apply the user's explicit sidebar dimensions
+    fig.update_layout(margin=dict(t=30), width=plot_width, height=plot_height, font=dict(family="Segoe UI Semibold", size=16))
 
-
-    # 2. Dynamically fetch the user's browser width
-    # Note: It briefly returns 0 on the very first page load, so we keep 1400 as a safe split-second fallback
-    screen_width = client_width if client_width > 0 else 1400 
-    
-    # 3. Calculate the exact margins based on their actual screen!
-    margin_size = max((screen_width - plot_width) / 2, 1) 
-    
-    # 4. Create the dynamic columns
-    col_left, col_center, col_right = st.columns([margin_size, plot_width, margin_size])
-    
+    # Render safely without Javascript. Using a spacer column pattern to keep it roughly centered.
+    # We set use_container_width=False so Plotly strictly obeys your pixel width slider.
+    col_left, col_center, col_right = st.columns([1, 6, 1])
     with col_center:
-        st.plotly_chart(fig, width="content")
+        st.plotly_chart(fig, width='content')
 
 # --- JOBLIB THREADING FUNCTION FOR EXPORT ---
-def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict, plot_width, plot_height):
+def render_single_metric_job(metric, df_to_plot, selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict, plot_width, plot_height):
     """Isolated function for multithreading the export sequence."""
     
     # FIX 1: Explicitly include 'Subject_ID' and use df_to_plot instead of the global merged_df
@@ -1301,20 +1264,19 @@ if uploaded_file:
                 else:
                     fig_m = px.box(final_df_m, x='Timepoint Weeks', y=plot_metric_m, color='Group', points="all" if show_pts_m else False, title=title_text_m, color_discrete_map=color_map)
 
-                fig_m.update_layout(margin=dict(t=30), xaxis=dict(type='linear', tickvals=sorted(selected_multi_tps)),width=plot_width, height=plot_height)
-                # 1. Update the layout width
+                # Apply the user's explicit sidebar dimensions
+                fig_m.update_layout(
+                    margin=dict(t=30), 
+                    xaxis=dict(type='linear', tickvals=sorted(selected_multi_tps)),
+                    width=plot_width, 
+                    height=plot_height
+                )
                 
-                # 2. Use the globally fetched screen width
-                screen_width = st.session_state.screen_width
-                                
-                # 3. Calculate the exact margins based on their actual screen!
-                margin_size = max((screen_width - plot_width) / 2, 1)
-                
-                # 4. Create the dynamic columns
-                col_left, col_center, col_right = st.columns([margin_size, plot_width, margin_size])
-                
+                # Render safely without Javascript.
+                # use_container_width=False forces Streamlit to respect your exact width/height sliders.
+                col_left, col_center, col_right = st.columns([1, 6, 1])
                 with col_center:
-                    st.plotly_chart(fig_m, width="content")
+                    st.plotly_chart(fig_m, width='content')
 
                 # --- STATS: OMNIBUS & POST-HOC HEATMAP TABLE ---
                 st.markdown("### Post-Hoc Pairwise Comparisons (FDR-Corrected)")
