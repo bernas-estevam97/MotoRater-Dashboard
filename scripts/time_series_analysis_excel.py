@@ -15,16 +15,20 @@ st.markdown("Visualize and compare time-series data from uploaded MotoRater Exce
 # --- Server Safety Configuration ---
 MAX_FILES_ALLOWED = 20 # Adjust this number based on your average file size
 
+# --- Initialize Session State for Uploader ---
+if "uploader_key" not in st.session_state:
+    st.session_state["uploader_key"] = 0
 
 # --- Sidebar: Data Source ---
 st.sidebar.header("1. Data Source")
 uploaded_files = st.sidebar.file_uploader(
     "Upload Excel Files (.xlsx, .xls)", 
     type=['xlsx', 'xls'], 
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    key=f"file_uploader_{st.session_state['uploader_key']}" # Dynamic key to force reset
 )
 
-# --- NEW: Dynamic Capacity Counter ---
+# --- Dynamic Capacity Counter ---
 current_file_count = len(uploaded_files)
 remaining_space = MAX_FILES_ALLOWED - current_file_count
 
@@ -41,6 +45,12 @@ elif remaining_space == 0:
 if current_file_count > MAX_FILES_ALLOWED:
     st.sidebar.error(f"🚨 **Capacity Exceeded!** You uploaded {current_file_count} files.")
     st.error(f"To keep the server from crashing, please remove {abs(remaining_space)} file(s) to get back under the {MAX_FILES_ALLOWED} file limit.")
+    
+    # NEW: Remove All Button
+    if st.button("🗑️ Remove All Files (Start Over)"):
+        st.session_state["uploader_key"] += 1
+        st.rerun() # Note: Use st.experimental_rerun() if you are on an older Streamlit version (< 1.27)
+        
     st.stop() # Halts script execution
 
 # Create a dictionary to easily access uploaded files by their names
@@ -347,10 +357,6 @@ if len(files) > 0:
                             st.info("👈 Select common Y axes to compare the files.")
 else:
     st.info("👈 Upload your Excel files in the sidebar to begin.")
-
-
-
-
 
 
 # --- Sidebar: System Controls ---

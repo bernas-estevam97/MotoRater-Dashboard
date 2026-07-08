@@ -822,8 +822,15 @@ def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot
     loop_fig.update_xaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
     loop_fig.update_yaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
     
-    # FIX: Use the plot_width and plot_height passed to the function, and apply the custom export_scale
-    img_bytes = loop_fig.to_image(format="png", width=plot_width, height=plot_height, scale=export_scale)
+    # --- NEW FIX: Suppress warnings inside the isolated worker process ---
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=DeprecationWarning, message="(?i).*kaleido.*")
+        warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*Kaleido.*")
+        
+        img_bytes = loop_fig.to_image(format="png", width=plot_width, height=plot_height, scale=export_scale)
+    # ---------------------------------------------------------------------
+
     safe_metric = "".join([c for c in metric if c.isalpha() or c.isdigit() or c==' ']).rstrip()
     return safe_metric, img_bytes
 

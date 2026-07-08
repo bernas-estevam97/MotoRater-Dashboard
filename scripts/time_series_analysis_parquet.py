@@ -17,11 +17,10 @@ st.markdown("Visualize and compare time-series data from uploaded MotoRater Parq
 # --- Server Safety Configuration ---
 MAX_FILES_ALLOWED = 20 # Adjust this based on your typical file sizes
 
-# --- Sidebar: System Controls ---
-st.sidebar.header("⚙️ System")
-if st.sidebar.button("🧹 Clear Server Memory"):
-    st.cache_data.clear()
-    st.sidebar.success("Cache cleared! RAM freed.")
+
+# --- Initialize Session State for Uploader ---
+if "uploader_key" not in st.session_state:
+    st.session_state["uploader_key"] = 0
 
 # --- Sidebar: Data Source ---
 st.sidebar.header("1. Data Source")
@@ -47,6 +46,10 @@ elif remaining_space <= 0:
 if current_file_count > MAX_FILES_ALLOWED:
     st.sidebar.error(f"🚨 **Capacity Exceeded!** You uploaded {current_file_count} files.")
     st.error(f"To keep the server from crashing, please remove {abs(remaining_space)} file(s) to get back under the {MAX_FILES_ALLOWED} file limit.")
+    # NEW: Remove All Button
+    if st.button("🗑️ Remove All Files (Start Over)"):
+        st.session_state["uploader_key"] += 1
+        st.rerun() # Note: Use st.experimental_rerun() if you are on an older Streamlit version (< 1.27)
     st.stop()
 
 # Dictionary to access files by name
@@ -353,3 +356,11 @@ if len(files) > 0:
                             st.info("👈 Select common Y axes to compare the files.")
 else:
     st.info("👈 Upload your data files in the sidebar to begin.")
+
+
+# --- Sidebar: System Controls ---
+st.sidebar.header("⚙️ System")
+st.sidebar.caption("If you are done with your analysis, you can clear the server's memory to free up server RAM for other users. This will clear all cached data and uploaded files.")
+if st.sidebar.button("🧹 Clear Server Memory"):
+    st.cache_data.clear()
+    st.sidebar.success("Cache cleared! RAM freed.")
