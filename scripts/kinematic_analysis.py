@@ -622,7 +622,7 @@ def run_longitudinal_stats(final_df: str, plot_metric: str, selected_groups: tup
 
 
 # --- STREAMLIT FUNCTION FOR PLOTTING (Tab 4) ---
-def render_plot_section(final_df, display_posthocs, color_map, plot_metric, selected_plot_timepoints, annotation_color, plot_width, plot_height):
+def render_plot_section(final_df, display_posthocs, function_dict, color_map, plot_metric, selected_plot_timepoints, annotation_color, plot_width, plot_height):
     col_p1, col_p2, col_p3 = st.columns(3)
     with col_p1:
         plot_format = st.selectbox("Plot Format:", ["Line Plot", "Bar Plot", "Box Plot", "Violin Plot"])
@@ -714,7 +714,7 @@ def render_plot_section(final_df, display_posthocs, color_map, plot_metric, sele
         st.plotly_chart(fig, width='content')
 
 # --- JOBLIB THREADING FUNCTION FOR EXPORT ---
-def render_single_metric_job(metric, df_to_plot, selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict, plot_width, plot_height):
+def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict, plot_width, plot_height):
     """Isolated function for multithreading the export sequence."""
     
     # FIX 1: Explicitly include 'Subject_ID' and use df_to_plot instead of the global merged_df
