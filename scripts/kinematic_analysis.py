@@ -22,8 +22,13 @@ from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 warnings.simplefilter('ignore', ConvergenceWarning)
 # Suppress Plotly/Kaleido specific environment warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, message="(?i).*kaleido.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*Kaleido.*")
+# Suppress grid=True FutureWarning
+warnings.filterwarnings("ignore", category=FutureWarning, message=".*grid=True.*")
+
+# Catch-all just in case
 warnings.filterwarnings("ignore", message="(?i).*kaleido.*")
-warnings.filterwarnings("ignore", message=".*Kaleido.*")
 
 # --- PLOTLY STATS FUNCTION (For Box Plots in Tab 5) ---
 def add_plotly_significance_brackets(fig, df, posthocs_df, x_col, y_col, text_color="black"):
@@ -1151,9 +1156,10 @@ if uploaded_file:
                 st.write("Generate and download a ZIP archive containing high-resolution **PNG** plots (with statistical significance) for **all** measurements in the current sheet.")
                 
                 if st.button("Generate All Plots (ZIP)", type="secondary"):
+                    total_metrics = len(numeric_cols)
                     progress_bar = st.progress(0)
                     status_text = st.empty()
-                    status_text.text("Parallelizing Image Renders...")
+                    status_text.text(f"Starting generation of {total_metrics} plots...")
                     
                     zip_buffer = io.BytesIO()
                     
@@ -1165,8 +1171,9 @@ if uploaded_file:
                         mapping_filtered,
                         on="Ids"
                     )
-                    # Swapped backend to 'loky' to prevent Kaleido browser crashes
-                    results = Parallel(n_jobs=2, backend="loky", prefers="threads")(
+                    
+                    # FIX: Add return_as="generator" so joblib passes images to the loop as soon as they render
+                    results = Parallel(n_jobs=2, backend="loky", prefers="threads", return_as="generator")(
                         delayed(render_single_metric_job)(
                             metric, merged_df, mapping_filtered, 
                             selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict,
@@ -1178,9 +1185,12 @@ if uploaded_file:
                         for idx, (safe_metric, img_bytes) in enumerate(results):
                             if img_bytes:
                                 zip_file.writestr(f"{safe_metric}.png", img_bytes)
-                            progress_bar.progress((idx + 1) / len(numeric_cols))
                             
-                    status_text.success("✅ All plots generated successfully! Ready for download.")
+                            # FIX: Dynamically update the progress bar and text UI
+                            progress_bar.progress((idx + 1) / total_metrics)
+                            status_text.text(f"✅ Generated {idx + 1} of {total_metrics} plots... ({safe_metric})")
+                            
+                    status_text.success(f"✅ All {total_metrics} plots generated successfully! Ready for download.")
                     
                     st.download_button(
                         label="📥 Download PNG ZIP",
