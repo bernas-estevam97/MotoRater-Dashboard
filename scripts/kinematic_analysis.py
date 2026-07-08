@@ -42,7 +42,13 @@ def add_plotly_significance_brackets(fig, df, posthocs_df, x_col, y_col, text_co
     if posthocs_df is None or posthocs_df.empty: 
         return fig
 
-    p_col = next((c for c in posthocs_df.columns if 'p-' in c.lower() or 'p_' in c.lower() or c.lower() == 'pval' or c.lower() == 'p'), None)
+    # Prefer the corrected p-value ('p_corr') to match the batch exporter and
+    # the line-plot annotator. Only fall back to uncorrected columns if no
+    # corrected one exists. (A plain 'p_' substring match + next() over the
+    # columns would silently grab 'p_unc' whenever it came first.)
+    lower_cols = {c.lower(): c for c in posthocs_df.columns}
+    _p_pref = ['p_corr', 'p-corr', 'p_unc', 'p-unc', 'pval', 'p_val', 'p-val', 'p']
+    p_col = next((lower_cols[pref] for pref in _p_pref if pref in lower_cols), None)
     if not p_col: 
         return fig
 
@@ -680,8 +686,12 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
     if show_pvals_on_line and not display_posthocs.empty:
         y_max_overall, y_min_overall = final_df[plot_metric].max(), final_df[plot_metric].min()
         offset = (y_max_overall - y_min_overall) * 0.08 if y_max_overall != y_min_overall else (y_max_overall * 0.05)
+        # Prefer the corrected p-value, matching the batch exporter (which uses
+        # 'p_corr' when present). Iterate over the PREFERENCE list, not the
+        # dataframe columns, so column order can't silently pick 'p_unc'.
         valid_p_cols = ['p_corr', 'p-corr', 'p_unc', 'p-unc', 'p_val', 'pval', 'p', 'p-val']
-        p_col = next((c for c in display_posthocs.columns if c.lower() in valid_p_cols), None)
+        lower_cols = {c.lower(): c for c in display_posthocs.columns}
+        p_col = next((lower_cols[pref] for pref in valid_p_cols if pref in lower_cols), None)
 
         if p_col:
             highest_drawn_y = y_max_overall
@@ -1355,7 +1365,7 @@ if uploaded_file:
                     try:
                         # backend="threading" prevents OS window popups by sharing the main process
                         # return_as="generator" streams results in real-time
-                        results_generator = Parallel(n_jobs=-1, backend="loky", return_as="generator")(
+                        results_generator = Parallel(n_jobs=2, backend="loky", return_as="generator")(
                             delayed(render_single_metric_job)(
                                 metric, df_to_plot, mapping_filtered, 
                                 selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict,
@@ -1379,7 +1389,7 @@ if uploaded_file:
                     except TypeError:
                         # Fallback for older environments with joblib < 1.3.0
                         status_text.warning(f"Generating {total_plots} plots in background. Progress will update when all are complete.")
-                        results = Parallel(n_jobs=-1, backend="threading")(
+                        results = Parallel(n_jobs=2, backend="threading")(
                             delayed(render_single_metric_job)(
                                 metric, df_to_plot, mapping_filtered, 
                                 selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict,
