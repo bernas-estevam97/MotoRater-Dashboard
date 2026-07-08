@@ -709,12 +709,11 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
 
     # Render safely without Javascript. Using a spacer column pattern to keep it roughly centered.
     # We set use_container_width=False so Plotly strictly obeys your pixel width slider.
-    col_left, col_center, col_right = st.columns([1, 6, 1])
-    with col_center:
-        st.plotly_chart(fig, width='content')
+    
+    st.plotly_chart(fig, width='content')
 
 # --- JOBLIB THREADING FUNCTION FOR EXPORT ---
-def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict, plot_width, plot_height):
+def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict, plot_width, plot_height, export_scale):
     """Isolated function for multithreading the export sequence."""
     
     # FIX 1: Explicitly include 'Subject_ID' and use df_to_plot instead of the global merged_df
@@ -818,7 +817,8 @@ def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot
     loop_fig.update_xaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
     loop_fig.update_yaxes(showline=True, linewidth=1, linecolor='black', gridcolor='lightgrey')
     
-    img_bytes = loop_fig.to_image(format="png", width=plot_width, height=plot_height, scale=2)
+    # FIX: Use the plot_width and plot_height passed to the function, and apply the custom export_scale
+    img_bytes = loop_fig.to_image(format="png", width=plot_width, height=plot_height, scale=export_scale)
     safe_metric = "".join([c for c in metric if c.isalpha() or c.isdigit() or c==' ']).rstrip()
     return safe_metric, img_bytes
 
@@ -886,12 +886,18 @@ if uploaded_file:
         help="Change this to White (#FFFFFF) if you are using Streamlit's Dark Mode so the asterisks are visible."
     )
 
-    # --- NEW DIMENSION CONTROLS ---
+   # --- NEW DIMENSION CONTROLS ---
     st.sidebar.markdown("---")
     st.sidebar.header("📐 Plot Dimensions")
-    st.sidebar.subheader("These settings affect both the app display and the downloaded PNGs.")
-    plot_width = st.sidebar.slider("Plot Width (Pixels)", min_value=600, max_value=2400, value=1000, step=50, help="Controls the width of the plots in the app and the downloaded PNGs.")
-    plot_height = st.sidebar.slider("Plot Height (Pixels)", min_value=400, max_value=1600, value=600, step=50, help="Controls the height of the plots in the app and the downloaded PNGs.")
+    
+    st.sidebar.subheader("App Display Settings")
+    app_plot_width = st.sidebar.slider("App Plot Width (px)", min_value=400, max_value=2000, value=2000, step=50, help="Controls the width of the plots viewed inside the app.")
+    app_plot_height = st.sidebar.slider("App Plot Height (px)", min_value=300, max_value=1200, value=600, step=50, help="Controls the height of the plots viewed inside the app.")
+
+    st.sidebar.subheader("Batch Export Settings")
+    export_plot_width = st.sidebar.slider("Export Width (px)", min_value=600, max_value=3000, value=1200, step=50, help="Width of the downloaded PNGs.")
+    export_plot_height = st.sidebar.slider("Export Height (px)", min_value=400, max_value=2000, value=800, step=50, help="Height of the downloaded PNGs.")
+    export_scale = st.sidebar.number_input("Export Image Scale (Quality)", min_value=1.0, max_value=5.0, value=1.0, step=0.5, help="Multiplier for resolution. 1.0 = exact pixels requested. 2.0 = double resolution.")
 
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
@@ -1134,8 +1140,8 @@ if uploaded_file:
                         plot_metric, 
                         selected_plot_timepoints, 
                         annotation_color,
-                        plot_width,
-                        plot_height
+                        app_plot_width,
+                        app_plot_height
                     )
 
 
@@ -1164,7 +1170,7 @@ if uploaded_file:
                         delayed(render_single_metric_job)(
                             metric, merged_df, mapping_filtered, 
                             selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict,
-                            plot_width, plot_height
+                            export_plot_width, export_plot_height, export_scale
                         ) for metric in numeric_cols
                     )
                     
@@ -1268,15 +1274,13 @@ if uploaded_file:
                 fig_m.update_layout(
                     margin=dict(t=30), 
                     xaxis=dict(type='linear', tickvals=sorted(selected_multi_tps)),
-                    width=plot_width, 
-                    height=plot_height
+                    width=app_plot_width, 
+                    height=app_plot_height
                 )
                 
                 # Render safely without Javascript.
                 # use_container_width=False forces Streamlit to respect your exact width/height sliders.
-                col_left, col_center, col_right = st.columns([1, 6, 1])
-                with col_center:
-                    st.plotly_chart(fig_m, width='content')
+                st.plotly_chart(fig_m)
 
                 # --- STATS: OMNIBUS & POST-HOC HEATMAP TABLE ---
                 st.markdown("### Post-Hoc Pairwise Comparisons (FDR-Corrected)")
@@ -1454,8 +1458,8 @@ if uploaded_file:
                             paper_bgcolor="white", 
                             plot_bgcolor="white",
                             polar=polar_config,
-                            width=plot_width, 
-                            height=plot_height,
+                            width=app_plot_width, 
+                            height=app_plot_height,
                             title=dict(
                                 text=f"Kinematic Profile at {radar_tp} Weeks {'(Normalized ' + radar_sheet + ')' if normalize_radar else '(Raw Values ' + radar_sheet + ')'}<br><sup style='color: dimgrey;'>{groups_str}</sup>",
                                 font=dict(color="black", size=18)
