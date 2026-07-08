@@ -16,12 +16,15 @@ from joblib import Parallel, delayed
 import json
 from statsmodels.stats.multitest import multipletests
 from streamlit_javascript import st_javascript
-
+import re
 # Suppress warnings
 import warnings
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 warnings.simplefilter('ignore', ConvergenceWarning)
+# Suppress Plotly/Kaleido specific environment warnings
+warnings.filterwarnings("ignore", message="(?i).*kaleido.*")
+warnings.filterwarnings("ignore", message=".*Kaleido.*")
 
 # --- PLOTLY STATS FUNCTION (For Box Plots in Tab 5) ---
 def add_plotly_significance_brackets(fig, df, posthocs_df, x_col, y_col, text_color="black"):
@@ -748,8 +751,10 @@ def render_plot_section(final_df, display_posthocs, function_dict, color_map, pl
 # --- JOBLIB THREADING FUNCTION FOR EXPORT ---
 def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot_timepoints, selected_plot_groups, color_map, xaxis_dict, plot_width, plot_height):
     """Isolated function for multithreading the export sequence."""
-    loop_df = merged_df[
-        ["Ids", "Group", "Timepoint Weeks", metric]
+    
+    # FIX 1: Explicitly include 'Subject_ID' and use df_to_plot instead of the global merged_df
+    loop_df = df_to_plot[
+        ["Ids", "Subject_ID", "Group", "Timepoint Weeks", metric]
     ].copy()
 
     loop_df[metric] = pd.to_numeric(loop_df[metric], errors="coerce")
@@ -762,36 +767,53 @@ def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot
     loop_summary = loop_summary.rename(columns={'mean': metric, 'sem': 'SEM'}).sort_values(by='Timepoint Weeks')
     title_text = f"Longitudinal Progression of {metric}"
     
-    batch_posthocs = pd.DataFrame()
-    rows = []
+    # Prepare internal columns for the statistical engine
+    loop_df['_metric_'] = loop_df[metric].astype(float)
+    loop_df['_time_'] = loop_df['Timepoint Weeks'].astype(str)
+    loop_df['_group_'] = loop_df['Group'].astype(str)
     loop_df['_tp_numeric_'] = pd.to_numeric(loop_df['Timepoint Weeks'], errors='coerce')
     
-    for tp in selected_plot_timepoints:
-        try: tp_num = float(tp)
-        except ValueError: continue 
-            
-        tp_df = loop_df[loop_df['_tp_numeric_'] == tp_num]
-        g1 = pd.to_numeric(tp_df[tp_df['Group'] == selected_plot_groups[0]][metric], errors='coerce').dropna()
-        g2 = pd.to_numeric(tp_df[tp_df['Group'] == selected_plot_groups[1]][metric], errors='coerce').dropna()
-        
-        if len(g1) > 1 and len(g2) > 1:
-            try:
+    batch_posthocs = pd.DataFrame()
+
+    # FIX 2: Replicate the LMM / T-Test logic from Tab 4 so batch plots match the UI perfectly
+    if len(selected_plot_timepoints) == 1:
+        # Cross-sectional logic (1 Timepoint)
+        tp = selected_plot_timepoints[0]
+        try:
+            tp_num = float(tp)
+            g1 = loop_df[loop_df['Group'] == selected_plot_groups[0]]['_metric_'].dropna()
+            g2 = loop_df[loop_df['Group'] == selected_plot_groups[1]]['_metric_'].dropna()
+            if len(g1) > 1 and len(g2) > 1:
                 res = pg.ttest(g1, g2)
                 p_col = next((c for c in res.columns if c.lower() in ['p-val', 'pval', 'p_val', 'p']), None)
-                if p_col: rows.append({'Timepoint Weeks': tp_num, 'p_val': float(res[p_col].iloc[0])})
-            except: 
-                try:
-                    res = pg.mwu(g1, g2)
-                    p_col = next((c for c in res.columns if c.lower() in ['p-val', 'pval', 'p_val', 'p']), None)
-                    if p_col: rows.append({'Timepoint Weeks': tp_num, 'p_val': float(res[p_col].iloc[0])})
-                except: pass
-    
-    if rows:
-        batch_posthocs = pd.DataFrame(rows)
-        if len(batch_posthocs) > 1:
-            _, p_corr = pg.multicomp(batch_posthocs['p_val'].values, method='holm')
-            batch_posthocs['p_val'] = p_corr
+                if p_col:
+                    batch_posthocs = pd.DataFrame([{'Timepoint Weeks': tp_num, 'p_corr': float(res[p_col].iloc[0])}])
+        except Exception:
+            pass
+    else:
+        # Longitudinal logic (2+ Timepoints -> LMM)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model = smf.mixedlm("_metric_ ~ C(_time_) * C(_group_)", loop_df, groups="Subject_ID").fit(method='lbfgs')
+            groups_sorted = sorted(loop_df['_group_'].unique())
+            batch_posthocs = run_pairwise_contrasts(
+                model, loop_df, selected_plot_timepoints,
+                ref_group=groups_sorted[0], test_group=groups_sorted[1], method='sidak'
+            )
+        except Exception:
+            try:
+                # Fallback to OLS if MixedLM fails to converge
+                model = smf.ols("_metric_ ~ C(_time_) * C(_group_)", data=loop_df).fit()
+                groups_sorted = sorted(loop_df['_group_'].unique())
+                batch_posthocs = run_pairwise_contrasts(
+                    model, loop_df, selected_plot_timepoints,
+                    ref_group=groups_sorted[0], test_group=groups_sorted[1], method='sidak'
+                )
+            except Exception:
+                pass
 
+    # Plotting code remains structurally the same
     loop_fig = px.line(loop_summary, x='Timepoint Weeks', y=metric, color='Group', markers=True, error_y='SEM', title=title_text, labels={'Timepoint Weeks': 'Timepoint (Weeks)'}, color_discrete_map=color_map)
     loop_fig.update_layout(xaxis=xaxis_dict)
     
@@ -800,22 +822,30 @@ def render_single_metric_job(metric, df_to_plot, mapping_filtered, selected_plot
         offset = (y_max_overall - y_min_overall) * 0.08 if y_max_overall != y_min_overall else (y_max_overall * 0.05)
         highest_drawn_y = y_max_overall
         loop_summary['_tp_numeric_'] = pd.to_numeric(loop_summary['Timepoint Weeks'], errors='coerce')
+        
+        # Dynamically fetch the correct p-value column generated by either T-Test or MixedLM
+        p_col_found = next((c for c in batch_posthocs.columns if c.lower() in ['p_corr', 'p-corr', 'p_unc', 'p-unc', 'p_val', 'pval', 'p']), None)
+        
+        if p_col_found:
+            for _, row in batch_posthocs.iterrows():
+                tp_num = float(row['Timepoint Weeks'])
+                pval = float(row[p_col_found])
+                
+                if pd.isna(pval): continue
+                
+                if pval < 0.001: star = "***"
+                elif pval < 0.01: star = "**"
+                elif pval < 0.05: star = "*"
+                else: star = "ns"
 
-        for _, row in batch_posthocs.iterrows():
-            tp_num, pval = float(row['Timepoint Weeks']), float(row['p_val'])
-            if pval < 0.001: star = "***"
-            elif pval < 0.01: star = "**"
-            elif pval < 0.05: star = "*"
-            else: star = "ns"
+                tp_summary = loop_summary[loop_summary['_tp_numeric_'] == tp_num]
+                if tp_summary.empty: continue
+                y_highest_tp = float((tp_summary[metric] + tp_summary['SEM'].fillna(0)).max())
 
-            tp_summary = loop_summary[loop_summary['_tp_numeric_'] == tp_num]
-            if tp_summary.empty: continue
-            y_highest_tp = float((tp_summary[metric] + tp_summary['SEM'].fillna(0)).max())
+                y_pos = y_highest_tp + offset
+                if y_pos > highest_drawn_y: highest_drawn_y = y_pos
 
-            y_pos = y_highest_tp + offset
-            if y_pos > highest_drawn_y: highest_drawn_y = y_pos
-
-            loop_fig.add_annotation(x=tp_num, y=float(y_pos), text=star, showarrow=False, font=dict(size=14 if star == "ns" else 22, color="#000000", family="Arial"))
+                loop_fig.add_annotation(x=tp_num, y=float(y_pos), text=star, showarrow=False, font=dict(size=14 if star == "ns" else 22, color="#000000", family="Arial"))
 
         loop_fig.update_layout(yaxis=dict(range=[y_min_overall - (offset * 0.5), highest_drawn_y + (offset * 1.5)]))
 
