@@ -9,11 +9,11 @@ from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ct
 # --- Page Configuration ---
 # st.set_page_config(page_title="MotoRater Data Dashboard", layout="wide")
 
-st.title("⏱️ MotoRater Time-Series analysis dashboard  - Excel")
+st.title("⏱️ MotoRater Time-Series analysis dashboard - Excel")
 st.markdown("Visualize and compare time-series data from uploaded MotoRater Excel files.")
 
 # --- Server Safety Configuration ---
-MAX_FILES_ALLOWED = 20 # Adjust this number based on your average file size
+MAX_FILES_ALLOWED = 20
 
 # --- Initialize Session State for Uploader ---
 if "uploader_key" not in st.session_state:
@@ -25,14 +25,13 @@ uploaded_files = st.sidebar.file_uploader(
     "Upload Excel Files (.xlsx, .xls)", 
     type=['xlsx', 'xls'], 
     accept_multiple_files=True,
-    key=f"file_uploader_{st.session_state['uploader_key']}" # Dynamic key to force reset
+    key=f"file_uploader_{st.session_state['uploader_key']}"
 )
 
 # --- Dynamic Capacity Counter ---
-current_file_count = len(uploaded_files)
+current_file_count = len(uploaded_files) if uploaded_files else 0
 remaining_space = MAX_FILES_ALLOWED - current_file_count
 
-# Calculate progress (safeguard against going over 1.0 if they upload too many)
 progress_value = min(current_file_count / MAX_FILES_ALLOWED, 1.0)
 st.sidebar.progress(progress_value)
 
@@ -45,46 +44,50 @@ elif remaining_space == 0:
 if current_file_count > MAX_FILES_ALLOWED:
     st.sidebar.error(f"🚨 **Capacity Exceeded!** You uploaded {current_file_count} files.")
     st.error(f"To keep the server from crashing, please remove {abs(remaining_space)} file(s) to get back under the {MAX_FILES_ALLOWED} file limit.")
-    
-    # NEW: Remove All Button
     if st.button("🗑️ Remove All Files (Start Over)"):
         st.session_state["uploader_key"] += 1
-        st.rerun() # Note: Use st.experimental_rerun() if you are on an older Streamlit version (< 1.27)
-        
-    st.stop() # Halts script execution
+        st.rerun()
+    st.stop()
 
-# Create a dictionary to easily access uploaded files by their names
-file_dict = {file.name: file for file in uploaded_files}
+file_dict = {file.name: file for file in uploaded_files} if uploaded_files else {}
 files = list(file_dict.keys())
 
+
 # --- Helpers: Excel Loading ---
-@st.cache_data(show_spinner=False, max_entries=20, ttl=1800)
-def get_excel_sheets(file_bytes):
+@st.cache_data(show_spinner=False, max_entries=50, ttl=1800)
+def get_excel_sheets(file_bytes: bytes):
     try:
         xls = pd.ExcelFile(io.BytesIO(file_bytes), engine='calamine')
         return xls.sheet_names
-    except Exception as e:
-        return None
+    except Exception:
+        try:
+            xls = pd.ExcelFile(io.BytesIO(file_bytes))
+            return xls.sheet_names
+        except Exception:
+            return None
 
-@st.cache_data(show_spinner=False, max_entries=20, ttl=1800)
-def load_excel_data(file_bytes, sheet_name, file_name):
+
+@st.cache_data(show_spinner=False, max_entries=50, ttl=1800)
+def load_excel_data(file_bytes: bytes, sheet_name: str, file_name: str):
     try:
-        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, engine='calamine')
+        try:
+            df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, engine='calamine')
+        except Exception:
+            df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name)
         
         if "filtered" in file_name.lower() and sheet_name == "Kinematics":
             if len(df) > 7: 
                 df = df.iloc[:-7]
-                
                 cols_to_convert = df.select_dtypes(include=['object']).columns
                 for col in cols_to_convert:
                     try:
                         df[col] = pd.to_numeric(df[col])
                     except (ValueError, TypeError):
                         pass 
-                        
         return df
-    except Exception as e:
+    except Exception:
         return None
+
 
 # --- Main Logic ---
 if len(files) > 0:
@@ -114,11 +117,9 @@ if len(files) > 0:
                 
                 with tab1:
                     c1, c2, c3 = st.columns(3)
-                    
                     with c1: 
                         x_axis = "Time"
                         st.text_input("X-Axis (Fixed)", value=x_axis, disabled=True)
-                        
                     with c2: 
                         y_axis = st.multiselect("Y-Axis (Values)", numeric_cols, default=None)
                     with c3: 
@@ -132,8 +133,10 @@ if len(files) > 0:
 
                     if x_axis and y_axis:
                         plot_df = df.copy()
-                        try: plot_df = plot_df.sort_values(by=x_axis)
-                        except: pass
+                        try: 
+                            plot_df = plot_df.sort_values(by=x_axis)
+                        except Exception: 
+                            pass
 
                         if smoothing > 1:
                             for col in y_axis:
@@ -150,7 +153,7 @@ if len(files) > 0:
                         default_px_colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"]
 
                         for i, col in enumerate(y_axis):
-                            with color_cols[i % len(color_cols)]: 
+                            with color_cols[i % len(color_cols)]:
                                 chosen_color = st.color_picker(
                                     f"{col}", 
                                     value=default_px_colors[i % len(default_px_colors)],
@@ -180,10 +183,8 @@ if len(files) > 0:
                     elif not y_axis:
                         st.info("👈 Select Y axes to see the chart.")
 
-                # --- TAB 2: Statistics ---
                 with tab2:
                     st.markdown("### 📊 Descriptive Statistics")
-
                     if selected_sheet == "Kinematics" and "Time" in df.columns:
                         valid_times = pd.to_numeric(df["Time"], errors='coerce').dropna()
                         if not valid_times.empty:
@@ -207,7 +208,7 @@ if len(files) > 0:
                             fig_corr = px.imshow(corr, text_auto=True, color_continuous_scale='RdBu_r', zmin=-1, zmax=1)
                             st.plotly_chart(fig_corr, width='stretch')
                     else:
-                        st.info("Check the box above to generate statistics. While the box is checked you can swap between files as it will update accordingly.")
+                        st.info("Check the box above to generate statistics.")
 
     # ==========================================
     # MULTIPLE FILES COMPARE MODE
@@ -224,14 +225,15 @@ if len(files) > 0:
             st.info("👈 Please select at least two files from the sidebar to compare.")
         else:
             ctx = get_script_run_ctx()
+            selected_bytes = {f: file_dict[f].getvalue() for f in selected_files}
             common_sheets = None
             
-            def get_excel_sheets_with_ctx(filename):
+            def get_excel_sheets_with_ctx(f_bytes):
                 add_script_run_ctx(threading.current_thread(), ctx)
-                return get_excel_sheets(file_dict[filename].getvalue())
+                return get_excel_sheets(f_bytes)
 
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                sheets_results = list(executor.map(get_excel_sheets_with_ctx, selected_files))
+                sheets_results = list(executor.map(get_excel_sheets_with_ctx, selected_bytes.values()))
             
             for sheets in sheets_results:
                 if sheets is not None:
@@ -244,13 +246,11 @@ if len(files) > 0:
                 st.error("No common sheets found among the selected files.")
             else:
                 common_sheet = st.selectbox("Select Sheet to compare across files:", list(common_sheets))
-                
                 dfs = {}
                 
                 def fetch_file_data_with_ctx(filename):
                     add_script_run_ctx(threading.current_thread(), ctx) 
-                    file_bytes = file_dict[filename].getvalue()
-                    return filename, load_excel_data(file_bytes, common_sheet, filename)
+                    return filename, load_excel_data(selected_bytes[filename], common_sheet, filename)
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     results = executor.map(fetch_file_data_with_ctx, selected_files)
@@ -285,12 +285,11 @@ if len(files) > 0:
                         st.error("These files have no common numeric columns to plot.")
                     else:
                         c1, c2, c3 = st.columns(3)
-                        
                         with c1: 
                             x_axis = "Time"
                             st.text_input("Common X-Axis (Fixed)", value=x_axis, disabled=True)
-                            
-                        with c2: y_axis = st.multiselect("Common Y-Axis", common_numeric, default=None)
+                        with c2: 
+                            y_axis = st.multiselect("Common Y-Axis", common_numeric, default=None)
                         with c3: 
                             chart_type = st.selectbox("Chart Type", ["Line", "Scatter", "Polar (Angles)", "Box Plot"])
 
@@ -307,7 +306,7 @@ if len(files) > 0:
                         default_px_colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"]
 
                         for i, filename in enumerate(dfs.keys()):
-                            with color_cols[i % len(color_cols)]: 
+                            with color_cols[i]:
                                 file_colors[filename] = st.color_picker(
                                     f"{filename}", 
                                     value=default_px_colors[i % len(default_px_colors)]
@@ -315,19 +314,17 @@ if len(files) > 0:
 
                         if x_axis and y_axis:
                             all_plot_data = []
-                            
                             for filename, data in dfs.items():
                                 plot_df = data[[x_axis] + y_axis].copy()
                                 plot_df['Source'] = filename
-                                
                                 try:
                                     plot_df = plot_df.sort_values(by=x_axis)
-                                except: pass
+                                except Exception: 
+                                    pass
 
                                 if smoothing > 1:
                                     for col in y_axis:
                                         plot_df[col] = plot_df[col].rolling(window=smoothing).mean()
-                                        
                                 all_plot_data.append(plot_df)
 
                             combined_df = pd.concat(all_plot_data, ignore_index=True)
@@ -335,7 +332,6 @@ if len(files) > 0:
                             melted_df['Legend'] = melted_df['Source'] + " | " + melted_df['Metric']
 
                             title = f"Comparing {', '.join(y_axis)} over {x_axis}"
-                            
                             custom_color_map = {}
                             for source, color in file_colors.items():
                                 custom_color_map[source] = color 
@@ -358,10 +354,9 @@ if len(files) > 0:
 else:
     st.info("👈 Upload your Excel files in the sidebar to begin.")
 
-
 # --- Sidebar: System Controls ---
-st.sidebar.header("⚙️ System")
-st.sidebar.caption("If you are done with your analysis, you can clear the server's memory to free up server RAM for other users. This will clear all cached data and uploaded files.")
-if st.sidebar.button("🧹 Clear Server Memory"):
+st.sidebar.markdown("---")
+st.sidebar.caption("Free server cache and memory:")
+if st.sidebar.button("🧹 Clear Server Cache"):
     st.cache_data.clear()
     st.sidebar.success("Cache cleared! RAM freed.")
