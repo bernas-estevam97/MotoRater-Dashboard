@@ -1,2 +1,11 @@
-other/
 venv/
+python_env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+install_log.txt
+.testwrite
+.installed
+app_update.zip
+app_code.zip

@@ -1,6 +1,10 @@
 import streamlit as st
 
-st.set_page_config(page_title="Statistical Methodology", layout="wide")
+# --- Page Configuration ---
+try:
+    st.set_page_config(page_title="Statistical Methodology", layout="wide")
+except Exception:
+    pass
 
 st.title("🧮 Statistical Methodology")
 st.markdown("""

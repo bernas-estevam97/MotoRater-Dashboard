@@ -11,7 +11,6 @@ cd "$(dirname "$0")" || exit
 GITHUB_ZIP_URL="https://github.com/bernas-estevam97/MotoRater-Dashboard/archive/refs/heads/dev.zip"
 GITHUB_EXTRACT_FOLDER="MotoRater-Dashboard-dev"
 
-TOTAL_STEPS=8
 ENV_DIR="python_env"
 MARKER_FILE="$ENV_DIR/.installed"
 PYTHON_EXE="$ENV_DIR/bin/python3"
@@ -25,7 +24,7 @@ draw_progress() {
     echo "        MOTO-RATER DASHBOARD SETUP"
     echo "=================================================="
     echo ""
-    echo "$1 Step $2/$TOTAL_STEPS"
+    echo "$1 Step $2/4"
     echo ""
     echo "Current Task: $3"
     echo ""
@@ -56,58 +55,50 @@ rm -f ".testwrite"
 if ! command -v curl &> /dev/null; then echo "[ERROR] 'curl' is required but missing." && read -p "Press Enter to exit..." && exit 1; fi
 if ! command -v tar &> /dev/null; then echo "[ERROR] 'tar' is required but missing." && read -p "Press Enter to exit..." && exit 1; fi
 
-# Check if Python 3 is installed (macOS usually includes this)
-if ! command -v python3 &> /dev/null; then
-    echo "[ERROR] Python 3 is not installed or not in your PATH."
-    echo "macOS will usually prompt you to install it if you open your Terminal"
-    echo "and run the command: xcode-select --install"
-    read -p "Press Enter to exit..."
-    exit 1
-fi
+# Check if an existing venv is available
+if [ -f "venv/bin/streamlit" ]; then
+    clear
+    echo "=================================================="
+    echo "            MOTO-RATER DASHBOARD"
+    echo "=================================================="
+    echo ""
+    echo "[System] Local virtual environment (venv) detected."
+    STREAMLIT_EXE="venv/bin/streamlit"
+elif [ -f "$MARKER_FILE" ]; then
+    # === FAST LANE ===
+    clear
+    echo "=================================================="
+    echo "            MOTO-RATER DASHBOARD"
+    echo "=================================================="
+    echo ""
+    echo "[System] Portable environment loaded."
+    echo "[System] Dependencies verified."
+    echo ""
+else
+    # Check if Python 3 is installed
+    if ! command -v python3 &> /dev/null; then
+        echo "[ERROR] Python 3 is not installed or not in your PATH."
+        echo "Please open Terminal and run: xcode-select --install"
+        read -p "Press Enter to exit..."
+        exit 1
+    fi
 
-# --- 1. SMART CHECK: Is Python environment installed? ---
-if [ ! -f "$MARKER_FILE" ]; then
     # === SLOW LANE (First Run Only) ===
-    
-    CURRENT_STEP=1
-    BAR="[#.......]"
-    draw_progress "$BAR" "$CURRENT_STEP" "Creating Virtual Environment..."
+    draw_progress "[#...]" "1" "Creating Virtual Environment..."
     python3 -m venv "$ENV_DIR" > install_log.txt 2>&1 || error_exit
 
-    CURRENT_STEP=2
-    BAR="[##......]"
-    draw_progress "$BAR" "$CURRENT_STEP" "Upgrading Pip..."
+    draw_progress "[##..]" "2" "Upgrading Pip..."
     "$PIP_EXE" install --upgrade pip --quiet >> install_log.txt 2>&1 || error_exit
 
-    CURRENT_STEP=3
-    BAR="[###.....]"
-    draw_progress "$BAR" "$CURRENT_STEP" "Installing Pandas (Data Engine)..."
-    "$PIP_EXE" install pandas --quiet >> install_log.txt 2>&1 || error_exit
+    draw_progress "[###.]" "3" "Installing Dependencies from requirements.txt..."
+    if [ -f "requirements.txt" ]; then
+        "$PIP_EXE" install -r requirements.txt --quiet >> install_log.txt 2>&1 || error_exit
+    else
+        "$PIP_EXE" install streamlit pandas openpyxl plotly pingouin python-calamine pyarrow polars statsmodels joblib streamlit-javascript tables psutil scikit-learn matplotlib --quiet >> install_log.txt 2>&1 || error_exit
+    fi
 
-    CURRENT_STEP=4
-    BAR="[####....]"
-    draw_progress "$BAR" "$CURRENT_STEP" "Installing Plotly and Openpyxl..."
-    "$PIP_EXE" install openpyxl plotly --quiet >> install_log.txt 2>&1 || error_exit
-
-    CURRENT_STEP=5
-    BAR="[#####...]"
-    draw_progress "$BAR" "$CURRENT_STEP" "Installing Pingouin..."
-    "$PIP_EXE" install pingouin --quiet >> install_log.txt 2>&1 || error_exit
-
-    CURRENT_STEP=6
-    BAR="[######..]"
-    draw_progress "$BAR" "$CURRENT_STEP" "Installing Python Calamine..."
-    "$PIP_EXE" install python-calamine --quiet >> install_log.txt 2>&1 || error_exit
-
-    CURRENT_STEP=7
-    BAR="[#######.]"
-    draw_progress "$BAR" "$CURRENT_STEP" "Installing Pyarrow..."
-    "$PIP_EXE" install pyarrow --quiet >> install_log.txt 2>&1 || error_exit
-
-    CURRENT_STEP=8
-    BAR="[########]"
-    draw_progress "$BAR" "$CURRENT_STEP" "Installing Streamlit (App Framework)..."
-    "$PIP_EXE" install streamlit --quiet >> install_log.txt 2>&1 || error_exit
+    draw_progress "[####]" "4" "Verifying Installation..."
+    "$PYTHON_EXE" -c "import streamlit, pandas, polars, statsmodels" >> install_log.txt 2>&1 || error_exit
 
     # --- Finalizing Setup ---
     touch "$MARKER_FILE"
@@ -115,18 +106,8 @@ if [ ! -f "$MARKER_FILE" ]; then
 
     clear
     echo "=================================================="
-    echo "[########] 100% - Installation Complete"
+    echo "[####] 100% - Installation Complete"
     echo "=================================================="
-    echo ""
-else
-    # === FAST LANE ===
-    clear
-    echo "=================================================="
-    echo "            MOTO-RATER DASHBOARD"
-    echo "=================================================="
-    echo ""
-    echo "[System] Local environment loaded."
-    echo "[System] Dependencies verified."
     echo ""
 fi
 
@@ -137,20 +118,15 @@ if [ ! -f "main.py" ]; then
     if [ -f "app_code.zip" ]; then
         tar -xf app_code.zip
         if [ -d "$GITHUB_EXTRACT_FOLDER" ]; then
-            # Prevent the script from overwriting the Mac launcher file
             rm -f "$GITHUB_EXTRACT_FOLDER/Launch_Dashboard.command" 2>/dev/null
-            
-            # Copy all files from the extracted folder to the current directory
             cp -R "$GITHUB_EXTRACT_FOLDER/"* . >/dev/null 2>&1
             rm -rf "$GITHUB_EXTRACT_FOLDER"
-            
-            # Grant execute permissions to any new Mac batch scripts pulled from the repo
             chmod +x *.command 2>/dev/null
         fi
         rm -f app_code.zip
         echo "[System] App code successfully downloaded."
     else
-        echo "[ERROR] Failed to download app files. Please check your internet connection."
+        echo "[ERROR] Failed to download app files. Please check internet connection."
         read -p "Press Enter to exit..."
         exit 1
     fi

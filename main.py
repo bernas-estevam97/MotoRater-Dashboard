@@ -1,8 +1,26 @@
 import streamlit as st
 from datetime import datetime
+import threading
 
 # 1. Set the configuration for the ENTIRE app here
 st.set_page_config(page_title="MotoRater Suite", page_icon="📑", layout="wide")
+
+# Pre-warm heavy scientific packages in background while user views landing page
+@st.cache_resource
+def _prewarm_scientific_modules():
+    """Silently pre-imports heavy modules into sys.modules during idle landing time."""
+    def _worker():
+        try:
+            import pingouin
+            import statsmodels.api
+            import polars
+        except Exception:
+            pass
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    return True
+
+_prewarm_scientific_modules()
 
 # 2. Define your pages
 # The file paths must now include your folder name so Streamlit can find them
