@@ -19,7 +19,7 @@ The MotoRater Suite provides an integrated research platform with tools tailored
 | :--- | :--- | :--- | :--- |
 | **📈 Time-Series Analysis (Excel)** | `.xlsx`, `.xls` | Exploratory time-series visualization from Excel files | Single & multi-file comparison, rolling-average noise filtering, polar angle plots, descriptive statistics, and correlation heatmaps. |
 | **📈 Time-Series Analysis (Parquet / HDF5)** | `.parquet`, `.h5`, `.hdf5` | High-speed time-series analysis for large datasets | **Up to 50x faster loading** than Excel, low RAM footprint, multi-dataset inspection. |
-| **📊 Kinematics Longitudinal Analyzer** | `.xlsx`, `.parquet`, `.h5`, `.zip` | Comprehensive longitudinal & cross-sectional modeling | Automated statistical routing (ANOVA, LMM, GEE), FDR/Holm multiple-testing corrections, parallel plot rendering, and radar profiling. |
+| **📊 Kinematics Longitudinal Analyzer** | `.xlsx`, `.parquet`, `.h5`, `.zip` | Comprehensive longitudinal & cross-sectional modeling | **GraphPad Prism-style test selection** (t-tests, one-way/Welch ANOVA, Kruskal-Wallis, RM ANOVA, mixed-effects, GEE) with recommended defaults, warnings when a chosen test does not fit the data, selectable post-hoc tests and multiple-comparison corrections, auto-generated methods text, CSV/ZIP export and radar profiling. |
 | **⚡ Excel ➔ Parquet/HDF5 Converter** | `.xlsx` ➔ `.parquet` / `.h5` | Batch file converter & compressor | Converts multi-sheet Excel files into optimized Parquet tables (or HDF5 stores) with automated kinematics data cleaning. |
 | **🧮 Statistical Methodology** | In-app Guide | Statistical reference & paper writing guide | Detailed breakdown of assumptions, normality tests, sphericity corrections, and copy-paste methods templates for scientific papers. |
 
@@ -76,9 +76,11 @@ Place the repository folder onto your local machine (from the `dev` branch) and 
   * Automatically detects if a virtual environment (`venv`) already exists.
   * If no environment is found, automatically installs an isolated, portable Python 3.12 environment, verifies all dependencies, and launches the app.
 * **`Update_Launch_App.bat` (Daily Use)**
-  * Offers an optional 4-second prompt to check GitHub for the latest updates before launching the application.
-* **`Updater.bat` (Standalone Background Updater)**
-  * Fetches and applies the latest updates from GitHub without starting the application.
+  * Asks (auto-skips after 5 s) whether to check GitHub for updates, then starts `Launch_Dashboard.bat`.
+* **`Updater.bat` (Standalone Updater)**
+  * Downloads the branch set in `BRANCH` (default `prod_pro`), verifies the archive before touching any file, and
+    flags a dependency refresh when `requirements.txt` changed — `Launch_Dashboard.bat` then re-installs dependencies
+    automatically on the next start.
 
 ### 🍎 Option 3: macOS Automated Launcher (`dev` branch)
 * Open Terminal in the repository folder:
@@ -124,18 +126,30 @@ streamlit run main.py
 
 ---
 
-## 🧮 Statistical Decision Tree
+## 🧮 Statistical Analysis (Prism-style)
 
-When analyzing longitudinal data in the **Kinematics Longitudinal Analyzer**, the suite applies an automated statistical pipeline:
-* **Single Timepoint (Cross-Sectional):**
-  * Evaluates residual normality via the Shapiro-Wilk test.
-  * **Parametric:** Welch's Independent t-test (robust to unequal variances).
-  * **Non-Parametric:** Mann-Whitney U test.
-* **Two or More Timepoints (Longitudinal):**
-  * **Pipeline A (2-Way Mixed ANOVA):** Triggered when data is normally distributed and perfectly balanced. Applies Mauchly's sphericity test with Greenhouse-Geisser correction (`p-GG-corr`).
-  * **Pipeline B (Linear Mixed-Effects Models - LMM):** Triggered when data is normal but has missing timepoints or dropouts, preventing Survivor Bias without dropping animals.
-  * **Pipeline C (Generalized Estimating Equations - GEE):** Triggered when normality assumptions are violated (skewed data). Uses robust Sandwich estimators and Wald contrast tests.
-* **Multiple Comparisons:** All post-hoc p-values are adjusted using the **Holm-Bonferroni** or **FDR (Benjamini-Hochberg)** step-down methods.
+The **Statistical Analysis** tab of the Kinematics Longitudinal Analyzer lets you choose the analysis yourself, as in
+GraphPad Prism, while guarding against choices that do not fit the data:
+
+1. **Assumption checks** run on every selection: residual normality (Shapiro-Wilk / D'Agostino-Pearson, CLT override for
+   n ≥ 100), equal variances (Levene), design balance (missing timepoints), sphericity (Mauchly) and group overlap.
+2. **Recommendation (★)** from the decision tree below; *Auto* applies it per measurement.
+3. **Your choice** of test, post-hoc and correction. If it violates an assumption, a warning explains why and suggests
+   an alternative (e.g. Mann-Whitney for skewed data, mixed-effects model instead of RM ANOVA with dropouts,
+   Games-Howell instead of Tukey with unequal variances, a repeated-measures model instead of per-timepoint t-tests).
+
+| Design | Tests offered (★ = recommended when…) | Post-hoc options |
+| :--- | :--- | :--- |
+| 2 groups, 1 timepoint | Welch's t ★ normal · Student's t · Mann-Whitney U ★ non-normal | direct comparison |
+| 3+ groups, 1 timepoint | One-way ANOVA ★ normal + equal var · Welch ANOVA ★ unequal var · Kruskal-Wallis ★ non-normal | Tukey, Games-Howell, Dunn, pairwise t / Welch / Mann-Whitney |
+| 2+ groups, 2+ timepoints | RM ANOVA (mixed design) ★ normal + balanced · Mixed-effects model (REML) ★ normal + missing data · GEE ★ non-normal · any 1-timepoint test run per timepoint | Model-based contrasts per timepoint (pooled repeated-measures error, as Prism) |
+
+**Corrections:** Holm (default), Šídák, Holm-Šídák, Bonferroni, Benjamini-Hochberg, two-stage step-up (BKY), or none.
+**α** is selectable. Results show an omnibus table, a multiple-comparisons table (CSV download, Prism-style `****`
+summaries), the assumption report and a ready-to-adapt **methods paragraph**. Batch export uses the same choices.
+
+The statistics live in `scripts/utils/stats_engine.py` (no Streamlit code); run
+`python -m scripts.utils.stats_engine` for its self-check.
 
 ---
 
@@ -153,7 +167,7 @@ MotoRater-Dashboard/
 ├── docs/                            # Statistical and experimental documentation
 ├── archive/                         # Legacy runner scripts & historical prototypes
 ├── scripts/                         # Streamlit page modules
-│   ├── utils/                       # Shared utilities (data mappings & safe GUI detection)
+│   ├── utils/                       # Shared utilities: stats_engine.py (all statistics), data mappings, safe GUI detection
 │   ├── intro.py                     # Welcome landing page
 │   ├── tutorial_time_series.py      # Time-Series guide
 │   ├── tutorial_kinematics.py       # Kinematics guide
@@ -172,6 +186,9 @@ MotoRater-Dashboard/
 
 * **`dev` Branch (Local Workstation):** The primary active branch for local execution. Features native folder dialogs, direct filesystem output, automated launcher scripts (`.bat` / `.command`), and multi-core processing for large datasets.
 * **`dev-cloud` Branch (Streamlit Cloud):** The active branch deployed directly to [Streamlit Community Cloud (Free tier)](https://motorater-dashboard.streamlit.app/). Contains cloud-adapted file uploaders, in-memory buffers (`BytesIO`), ZIP download buttons, and container memory safeguards.
+* **`prod_pro` Branch:** Production-focused branch with the Prism-style statistics engine, reorganized analysis UI
+  and hardened Windows launchers. Its launchers and updater download from `prod_pro`, so the branch must exist on
+  GitHub for the updater to work (change `BRANCH` in `Updater.bat` to follow another branch).
 * **`master` Branch:** Legacy baseline repository (contains initial project commit; all active development and enhancements are maintained on `dev` and `dev-cloud`).
 
 ---

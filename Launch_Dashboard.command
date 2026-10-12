@@ -8,8 +8,8 @@ cd "$(dirname "$0")" || exit
 # ==========================================
 
 # --- Configuration ---
-GITHUB_ZIP_URL="https://github.com/bernas-estevam97/MotoRater-Dashboard/archive/refs/heads/dev.zip"
-GITHUB_EXTRACT_FOLDER="MotoRater-Dashboard-dev"
+GITHUB_ZIP_URL="https://github.com/bernas-estevam97/MotoRater-Dashboard/archive/refs/heads/prod_pro.zip"
+GITHUB_EXTRACT_FOLDER="MotoRater-Dashboard-prod_pro"
 
 ENV_DIR="python_env"
 MARKER_FILE="$ENV_DIR/.installed"

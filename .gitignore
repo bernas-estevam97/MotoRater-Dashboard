@@ -1,11 +1,49 @@
+# --- Python environments ---
 venv/
+.venv/
+env/
 python_env/
+
+# --- Python bytecode / tooling caches ---
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- Launcher / updater artefacts ---
 *.log
 install_log.txt
 .testwrite
 .installed
+.deps_outdated
 app_update.zip
 app_code.zip
+python.zip
+get-pip.py
+MotoRater-Dashboard-*/
+
+# --- Streamlit local config & secrets ---
+.streamlit/secrets.toml
+.env
+
+# --- User / experiment data (never commit lab data) ---
+*.xlsx
+*.xls
+*.csv
+*.parquet
+*.h5
+*.hdf5
+*.zip
+~$*
+
+# --- Editors, AI tools & OS ---
+.vscode/
+.idea/
+.claude/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

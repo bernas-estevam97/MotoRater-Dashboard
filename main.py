@@ -39,7 +39,7 @@ tutorial_page_time = st.Page(
 
 tutorial_page_kine = st.Page(
     page="scripts/tutorial_kinematics.py",
-    title="Tutorial - Kinematics Longitudinal Analyzer",
+    title="Tutorial - Kinematics",
     icon="❓",
 )
 
@@ -75,8 +75,9 @@ converter_page = st.Page(
 
 # 3. Create the navigation menu
 pg = st.navigation(
-    {"Home": [intro_page, tutorial_page_time, tutorial_page_kine, stat_info_page],
-     "MotoRater Tools": [all_measurements_page, all_measurements_parquet, kinematics_analysis_page, converter_page]}
+    {"Home": [intro_page],
+     "MotoRater Tools": [kinematics_analysis_page, all_measurements_page, all_measurements_parquet, converter_page],
+     "Guides": [tutorial_page_kine, tutorial_page_time, stat_info_page]}
 )
 
 # 4. Run the selected page
