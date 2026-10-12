@@ -1,8 +1,8 @@
 # MotoRater Dashboard — Project State & Tracking
 
-> **Last Updated:** September 9, 2026  
+> **Last Updated:** October 12, 2026  
 > **Repository:** `bernas-estevam97/MotoRater-Dashboard`  
-> **Current Branch:** `dev`  
+> **Current Branch:** `pro-cloud` (Streamlit Community Cloud build of `prod_pro`)  
 > **Maintainer:** Bernardo Estevam
 
 ---
@@ -23,10 +23,7 @@ The codebase now operates in a unified **dual-mode architecture**:
 MotoRater-Dashboard/
 ├── main.py                          # Streamlit navigation entrypoint (st.navigation)
 ├── requirements.txt                 # Complete Python dependencies (synchronized with all features)
-├── Launch_Dashboard.bat             # Upgraded Windows launcher (smart venv detection + portable fallback)
-├── Update_Launch_App.bat            # Upgraded Windows daily launcher (GitHub update check + launcher)
-├── Updater.bat                      # Windows standalone updater script
-├── Launch_Dashboard.command         # Upgraded macOS automated launcher (bash)
+├── .devcontainer/                   # GitHub Codespaces config
 ├── command_for_mac_os.txt           # Helper command note for macOS terminal permissions
 ├── README.md                        # Project documentation and quick-start guide
 ├── LICENSE                          # GNU General Public License v3.0
@@ -47,7 +44,7 @@ MotoRater-Dashboard/
 │   ├── utils/                       # Shared utility modules
 │   │   ├── __init__.py
 │   │   ├── data_mappings.py         # Canonical column renaming map & format helpers
-│   │   └── file_utils.py            # Safe GUI & headless environment detection
+│   │   ├── stats_engine.py          # Prism-style statistics engine (no Streamlit code, self-check in __main__)
 │   ├── intro.py                     # Welcome landing page
 │   ├── tutorial_time_series.py      # Time-Series tutorial page
 │   ├── tutorial_kinematics.py       # Kinematics tutorial page
@@ -93,6 +90,49 @@ MotoRater-Dashboard/
 ### F. Modernized Pandas Operations
 * Replaced deprecated `pd.to_numeric(..., errors='ignore')` in `convert_to_parquet.py` with a safe numeric conversion handler.
 
+### G. Prism-Style Statistics Engine (`prod_pro`, 2026-10-12)
+* New `scripts/utils/stats_engine.py` holds all statistics as pure functions, shared by the page, the Streamlit cache
+  and the parallel batch exporter (previously the batch exporter used a different model than the page).
+* Users choose the **test**, **post-hoc** and **correction** (and α); *Auto* keeps the original decision tree.
+  - 2 groups / 1 timepoint: Welch's t, Student's t, Mann-Whitney U.
+  - 3+ groups / 1 timepoint: one-way ANOVA (Tukey, pairwise t/Welch), Welch ANOVA (Games-Howell, pairwise Welch),
+    Kruskal-Wallis (Dunn, pairwise Mann-Whitney).
+  - 2+ timepoints: RM ANOVA (mixed design, GG-corrected), mixed-effects model (REML), GEE (family + working correlation
+    selectable), or any cross-sectional test per timepoint. Post-hoc = model-based contrasts for every group pair.
+  - Corrections: Holm, Šídák, Holm-Šídák, Bonferroni, BH-FDR, two-stage BKY, none.
+* `assess_fit()` warns when a choice does not fit the data (non-normal residuals with parametric tests, unequal
+  variances with Student/ordinary ANOVA/Tukey, RM ANOVA with missing timepoints, per-timepoint tests on repeated
+  measures, GEE with < 40 subjects, no correction with many comparisons) and blocks overlapping groups.
+* Fixes: mixed-model fitting now tries several optimizers (lbfgs alone hit singular matrices and silently fell back to
+  OLS); model contrasts are built from the design matrix so they work for any group pair; omnibus tests for LMM/GEE use
+  sum-to-zero coding (Type III-style Wald χ²); HDF5 uploads now load (HDFStore cannot read a BytesIO buffer).
+
+### H. Kinematics UI Reorganization (`prod_pro`, 2026-10-12)
+* Tabs reduced from 6 to 4: **Data** (incl. ID list), **Groups & Subjects**, **Statistical Analysis** (merges the old
+  2-group and multi-group tabs), **Radar Profile** (renders automatically; no "Generate" button).
+* Analysis tab: KPI header (subjects, groups, timepoints, normality, balance), bordered *Analysis setup* panel,
+  results split into Graph / Multiple comparisons (highlighted, CSV download) / Omnibus / Assumptions / Methods text.
+* First selected group is the reference group ("Group A"). Sidebar settings grouped into collapsible expanders.
+  Unit conversion is cached instead of copying every sheet on each rerun.
+* Batch export ZIP now also contains `statistics_summary.csv` and honours the selected test/correction.
+* Landing page uses `st.page_link` tool cards; navigation reordered into Home / Tools / Guides.
+* Removed unused `kaleido` and `streamlit-javascript` dependencies; `streamlit>=1.50`.
+
+### I. Launchers (`prod_pro`, 2026-10-12)
+* `Updater.bat` is the single update routine (`/silent` for scripted use): configurable `BRANCH`, `curl -f` so 404s are
+  detected, archive verified before copying, safe self-overwrite, `.deps_outdated` flag when `requirements.txt` changed.
+* `Launch_Dashboard.bat`: fixed error checks that tested `del` instead of the download, re-installs dependencies after
+  updates, shows the last lines of the install log on failure, restarts from the fresh copy after self-healing.
+* `Update_Launch_App.bat` reduced to a prompt plus calls to `Updater.bat` and `Launch_Dashboard.bat` (no duplicate
+  installer code). `Launch_Dashboard.command` (macOS) now follows `prod_pro`.
+
+### J. Cloud Build (`pro-cloud`, 2026-10-12)
+* `prod_pro` merged into `pro-cloud` (fork of `dev-cloud`). Kept the cloud versions of the converter and both
+  time-series pages (`st.file_uploader` + ZIP download instead of Tkinter folder/file dialogs).
+* Removed local-only files: `Launch_Dashboard.bat`, `Update_Launch_App.bat`, `Updater.bat`,
+  `Launch_Dashboard.command`, `command_for_mac_os.txt`, and `scripts/utils/file_utils.py` (Tkinter helpers, unused).
+* Kinematics batch export capped at 2 loky workers to stay inside the free tier's 1 GB RAM.
+
 ---
 
 ## 4. Updates & Change Log
@@ -108,3 +148,12 @@ MotoRater-Dashboard/
   - Added background module pre-warming in `main.py` using `@st.cache_resource`, loading `pingouin`, `statsmodels`, and `polars` during landing page idle time to eliminate cold-start delays.
   - Removed `st_javascript` iframe round-trips in `kinematic_analysis_optimized.py`, eliminating double-rerun delays on Tabs 4 & 5.
   - Updated `README.md` with complete documentation, dual-mode deployment guide, quick-start instructions, performance advice, and statistical workflow.
+* **[2026-10-12]** (`prod_pro`): Prism-style user-selectable tests, post-hocs and corrections with fit warnings
+  (`scripts/utils/stats_engine.py`); kinematics page reorganized into 4 tabs with KPI header, results tabs, CSV
+  export and methods text; HDF5 upload fix; launcher/updater rewrite; docs (`stat_info.py`, tutorial, README) updated.
+  Not changed: time-series pages and converter.
+* **[2026-10-12]** (`prod_pro`): `docs/Info Statistical Analysis.docx/.pdf` rewritten for the new workflow (test
+  selection, fit warnings, Omnibus / Multiple comparisons / Assumptions / Methods tabs, corrections, Prism stars);
+  generated with Microsoft Word. `.gitignore` extended (lab data files, secrets, launcher artefacts, editor/OS files).
+* **[2026-10-12]** (`pro-cloud`): merged `prod_pro` (statistics engine, UI, docs) into the cloud branch; removed local
+  launchers and Tkinter helpers; batch export capped at 2 workers for Streamlit Community Cloud.

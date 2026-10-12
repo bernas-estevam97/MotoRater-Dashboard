@@ -11,9 +11,8 @@ st.markdown("""
 
 ## 📂 1. Getting Started
 1. Go to the **Data Source** section in the left sidebar.
-2. Choose your input mode: **Upload Files** (drag-and-drop) or **Local Folder** (if running locally). 
-3. Select or upload your MotoRater `.xlsx`, `.xls` or `.parquet` / `.h5` files.
-4. Once loaded, the sidebar will confirm how many files were found.
+2. Drag and drop your MotoRater `.xlsx`, `.xls` or `.parquet` / `.h5` files into the upload box.
+3. Once loaded, the sidebar will confirm how many files were found.
 
 ---
 

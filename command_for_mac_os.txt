@@ -1,3 +1,0 @@
-If given only Launch_Dashboard.command file run this command in your terminal to give it execute permissions:
-
-chmod +x [path_to_file]/Launch_Dashboard.command

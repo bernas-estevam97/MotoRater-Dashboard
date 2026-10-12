@@ -1,34 +1,39 @@
 import streamlit as st
 
-# --- Landing Page Content ---
-st.title("📑 Welcome to the MotoRater Suite")
-st.markdown("---")
+st.title("📑 MotoRater Suite")
+st.caption("Processing, statistics and visualization for MotoRater kinematics and time-series data.")
 
-st.markdown("""
-### Your centralized hub for Kinematics and Time-Series Analysis.
+st.markdown("#### Tools")
+c1, c2 = st.columns(2)
+with c1:
+    with st.container(border=True):
+        st.page_link("scripts/kinematic_analysis_optimized.py", label="Kinematics Longitudinal Analysis", icon="📊")
+        st.caption("Group comparisons over time with Prism-style test selection (t-tests, ANOVA, RM ANOVA, "
+                   "mixed-effects, GEE, non-parametric), post-hoc corrections, radar profiles and batch export.")
+    with st.container(border=True):
+        st.page_link("scripts/convert_to_parquet.py", label="Excel → Parquet/HDF5 Converter", icon="⚡")
+        st.caption("Convert filtered .xlsx files once — Parquet loads up to 50x faster.")
+with c2:
+    with st.container(border=True):
+        st.page_link("scripts/time_series_analysis_excel.py", label="Time-Series Analysis — Excel", icon="📈")
+        st.caption("Visualize and compare time-series data across measurements and runs.")
+    with st.container(border=True):
+        st.page_link("scripts/time_series_analysis_parquet.py", label="Time-Series Analysis — Parquet & HDF5",
+                     icon="📈")
+        st.caption("Same dashboard, much faster loading for large datasets.")
 
-This suite is designed to process, analyze, and visualize your MotoRater data efficiently. 
+st.markdown("#### Help")
+h1, h2, h3 = st.columns(3)
+h1.page_link("scripts/tutorial_kinematics.py", label="Kinematics tutorial", icon="❓")
+h2.page_link("scripts/tutorial_time_series.py", label="Time-series tutorial", icon="❓")
+h3.page_link("scripts/stat_info.py", label="Statistical methodology", icon="🧮")
 
-👈 **Please select a tool from the sidebar to get started:**
+st.info("💡 Working with large datasets? Run your **filtered** Excel files through the Parquet converter first.")
 
-* **📈 Time-Series Dashboard:** Visualize and compare standard time-series data across multiple measurements and test runs. This is available for both excel and parquet files (a faster data file format).
-                   
-* **📊 Kinematics Longitudinal Analyser:** Dive deep into specific kinematic behaviors and metrics over time.
-            
-* **⚡ Excel -> Parquet Converter:** Start here if you have raw `.xlsx` files. Converting them to Parquet will make your dashboards run up to 50x faster.
-""")
-
-st.info("💡 Tip: If you are analyzing a large dataset, always run it through the Parquet Converter first!")
-
-st.markdown("""
-### Additional Information ℹ️
-            
-- It is highly recommended that when using the time series dashboard functionality that you are working with already filtered files of your motorater files. Why? Because original files that come out of
-  motorater processing algorithms present a lot of noise, filler data, among other data sections that might present problems in most cases.
-            
-- If you want faster speeds on your analysis, convert your **filetered** excel files to parquet using the tool: ⚡ Excel -> Parquet Converter
-            
-- The tool **Kinematics Longitudinal Analyser** uses a file that was obtained from all the filtered files of your data. To obtain this file make sure to ask the developer for it. The algorithm that creates
-  these files is not available to the user yet. In time, there will be an app to use these algorithms allowing the user to independently filter and group the data files.
-
+with st.expander("Before you start", expanded=False):
+    st.markdown("""
+- Use **already filtered** MotoRater files with the time-series dashboards. Raw MotoRater output contains noise and
+  filler data that can cause problems.
+- The **Kinematics Longitudinal Analysis** tool uses a file built from all filtered files of your experiment. Ask the
+  developer for this file — the grouping/filtering algorithm is not yet available as a user tool.
 """)
