@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import polars as pl
 import streamlit as st
 from joblib import Parallel, delayed
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
@@ -84,19 +83,10 @@ def convert_units(_raw: dict, filename: str, unit: str) -> dict:
 
 def build_final_df(df_sheet, mapping, metric, group_order):
     """Join measurements to the ID mapping and average trials per subject x timepoint."""
-    values = df_sheet[['Ids', metric]].copy()
-    values['Ids'] = values['Ids'].astype(str)
-    mapping = mapping.copy()
-    mapping['Ids'] = mapping['Ids'].astype(str)
-    out = (
-        pl.from_pandas(values)
-        .join(pl.from_pandas(mapping), on='Ids', how='inner')
-        .with_columns(pl.col(metric).cast(pl.Float64, strict=False))
-        .drop_nulls(subset=[metric])
-        .group_by(['Subject_ID', 'Group', TP])
-        .agg(pl.col(metric).mean())
-        .to_pandas()
-    )
+    # Plain pandas: pl.from_pandas segfaulted under Streamlit with polars 2.0 + pandas 3.
+    out = pd.merge(df_sheet[['Ids', metric]].astype({'Ids': str}), mapping.astype({'Ids': str}), on='Ids')
+    out[metric] = pd.to_numeric(out[metric], errors='coerce')
+    out = out.dropna(subset=[metric]).groupby(['Subject_ID', 'Group', TP], as_index=False)[metric].mean()
     out['_metric_'] = out[metric].astype(float)
     out['Group'] = pd.Categorical(out['Group'], categories=group_order)
     return out.sort_values([TP, 'Group'])

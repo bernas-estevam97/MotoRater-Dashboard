@@ -1,19 +1,15 @@
-streamlit>=1.50.0
-pandas>=2.1.0
-numpy
-matplotlib
-seaborn
-plotly
-scikit-learn
-scipy
-statsmodels
-pingouin
-openpyxl
-python-calamine
-pandas-flavor
-xarray
-polars
-psutil
-joblib
-tables
-pyarrow
+# Ranges span the versions tested on 2026-10-20: local venv (lower bound) and the
+# latest releases Streamlit Cloud installs (upper tested). Caps block untested major releases.
+streamlit>=1.55,<2
+pandas>=2.3,<4
+numpy>=2.4,<3
+scipy>=1.17,<2
+statsmodels>=0.14.6,<0.16
+pingouin>=0.6.1,<0.8
+matplotlib>=3.10,<4
+plotly>=6.6,<8
+joblib>=1.5,<2
+openpyxl>=3.1.5,<4
+python-calamine>=0.6.2,<1
+tables>=3.11,<4
+pyarrow>=23,<27
