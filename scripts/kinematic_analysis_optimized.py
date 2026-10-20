@@ -187,7 +187,7 @@ def render_plot_section(final_df, comparisons, color_map, plot_metric, timepoint
 
     fig.update_layout(margin=dict(t=50), width=plot_width, height=plot_height,
                       font=dict(family="Segoe UI Semibold", size=16))
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width=plot_width)  # "stretch" overrides the layout width
 
 
 def render_single_metric_job(metric, df_sheet, mapping, timepoints, group_order, color_map,
@@ -666,4 +666,4 @@ with tab_radar:
                     polar=polar, width=plot_width, height=plot_height,
                     title=f"Kinematic profile at week {radar_tp} — {radar_sheet} "
                           f"({'normalized' if normalize_radar else 'raw values'})")
-                st.plotly_chart(fig_radar, width="stretch")
+                st.plotly_chart(fig_radar, width=plot_width)
