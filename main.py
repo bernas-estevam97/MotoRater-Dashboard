@@ -13,7 +13,6 @@ def _prewarm_scientific_modules():
         try:
             import pingouin
             import statsmodels.api
-            import polars
         except Exception:
             pass
     t = threading.Thread(target=_worker, daemon=True)

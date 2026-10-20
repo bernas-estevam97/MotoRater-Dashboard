@@ -82,6 +82,13 @@ else
         read -p "Press Enter to exit..."
         exit 1
     fi
+    # requirements.txt (numpy/scipy/streamlit versions) needs Python 3.11+; macOS' built-in python3 is often 3.9.
+    if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+        echo "[ERROR] Python 3.11 or newer is required (found $(python3 --version 2>&1))."
+        echo "Install the latest Python from https://www.python.org/downloads/macos/ and run this again."
+        read -p "Press Enter to exit..."
+        exit 1
+    fi
 
     # === SLOW LANE (First Run Only) ===
     draw_progress "[#...]" "1" "Creating Virtual Environment..."
@@ -94,11 +101,11 @@ else
     if [ -f "requirements.txt" ]; then
         "$PIP_EXE" install -r requirements.txt --quiet >> install_log.txt 2>&1 || error_exit
     else
-        "$PIP_EXE" install streamlit pandas openpyxl plotly pingouin python-calamine pyarrow polars statsmodels joblib streamlit-javascript tables psutil scikit-learn matplotlib --quiet >> install_log.txt 2>&1 || error_exit
+        "$PIP_EXE" install streamlit pandas numpy scipy statsmodels pingouin matplotlib plotly joblib openpyxl python-calamine tables pyarrow psutil --quiet >> install_log.txt 2>&1 || error_exit
     fi
 
     draw_progress "[####]" "4" "Verifying Installation..."
-    "$PYTHON_EXE" -c "import streamlit, pandas, polars, statsmodels" >> install_log.txt 2>&1 || error_exit
+    "$PYTHON_EXE" -c "import streamlit, pandas, statsmodels, pingouin" >> install_log.txt 2>&1 || error_exit
 
     # --- Finalizing Setup ---
     touch "$MARKER_FILE"

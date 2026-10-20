@@ -25,7 +25,6 @@ import pingouin as pg
 import scipy.stats as stats
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
-from patsy import build_design_matrices
 from statsmodels.stats.multitest import multipletests
 
 TP, GRP, SUBJ, Y = 'Timepoint Weeks', 'Group', 'Subject_ID', '_metric_'
@@ -70,6 +69,8 @@ CORRECTIONS = {
 }
 DEFAULT_CORRECTION = "Holm (step-down)"
 
+# Below this many subjects GEE uses Mancl-DeRouen bias-reduced sandwich standard errors.
+GEE_SMALL_N = 40
 GEE_FAMILIES = ['auto', 'gaussian', 'gamma', 'poisson']
 GEE_COVS = ['auto', 'autoregressive', 'exchangeable', 'independence']
 
@@ -259,21 +260,26 @@ def check_assumptions(df: pd.DataFrame, alpha: float = 0.05) -> dict:
 def recommend(a: dict) -> tuple:
     """Return (test, posthoc, reason) following the original automatic decision tree."""
     normal, eq = a['normal'], a['equal_var']
-    if a['n_timepoints'] > 1:
+    if a['n_timepoints'] > 1 and a['min_n'] >= 3:
         if normal and a['balanced']:
             return 'mixed_anova', 'model', "residuals are normal and every subject has every timepoint"
         if normal:
             return 'lmm', 'model', "residuals are normal but some subjects miss timepoints (keeps all data)"
         return 'gee', 'model', "residuals are not normally distributed"
     if a['n_groups'] == 2:
-        if normal:
-            return 'welch_t', 'direct', "residuals are normal (Welch's is robust to unequal variances)"
-        return 'mwu', 'direct', "residuals are not normally distributed"
-    if normal and eq:
-        return 'anova1', 'tukey', "residuals are normal and variances are equal"
-    if normal:
-        return 'welch_anova', 'games_howell', "residuals are normal but variances are unequal"
-    return 'kruskal', 'dunn', "residuals are not normally distributed"
+        rec = (('welch_t', 'direct', "residuals are normal (Welch's is robust to unequal variances)") if normal
+               else ('mwu', 'direct', "residuals are not normally distributed"))
+    elif normal and eq:
+        rec = 'anova1', 'tukey', "residuals are normal and variances are equal"
+    elif normal:
+        rec = 'welch_anova', 'games_howell', "residuals are normal but variances are unequal"
+    else:
+        rec = 'kruskal', 'dunn', "residuals are not normally distributed"
+    if a['n_timepoints'] > 1:
+        # Repeated-measures models need 3+ subjects per group (see assess_fit).
+        rec = rec[:2] + (rec[2] + "; a group has fewer than 3 subjects, too few for a repeated-measures model, "
+                                  "so each timepoint is tested separately",)
+    return rec
 
 
 def assess_fit(test: str, posthoc: str, correction: str, a: dict) -> list:
@@ -303,9 +309,10 @@ def assess_fit(test: str, posthoc: str, correction: str, a: dict) -> list:
                             f"**{label(_PARAM_ALT[test])}** would be more sensitive."))
     if test == 'gee' and a['normal']:
         out.append(('info', "Residuals look normal; a mixed-effects model or RM ANOVA usually has more power than GEE."))
-    if test == 'gee' and a['n_subjects'] < 40:
-        out.append(('warning', f"GEE relies on large-sample (sandwich) standard errors. With only {a['n_subjects']} "
-                               "subjects these can be too small, giving optimistic p-values."))
+    if test == 'gee' and a['n_subjects'] < GEE_SMALL_N:
+        out.append(('info', f"With only {a['n_subjects']} subjects, GEE uses Mancl-DeRouen bias-reduced sandwich "
+                            "standard errors (plain sandwich errors are too small in small samples). P-values can "
+                            "still be slightly optimistic with very few subjects."))
 
     if not a['equal_var']:
         if test in ('student_t', 'anova1'):
@@ -368,18 +375,19 @@ def _wald_table(res):
 def _model_contrasts(res, d, groups, tps):
     """B - A difference between every pair of groups at every timepoint, using the
     fitted model's covariance (pooled repeated-measures error, as Prism does)."""
-    design_info = res.model.data.design_info
-    k = getattr(res.model, 'k_fe', len(res.params))
-    present = set(zip(d['_time_'], d['_group_']))
+    # The fixed-effect design row depends only on (time, group), so take it from any
+    # fitted row in that cell. Avoids patsy's design_info (gone in statsmodels >= 0.15).
+    exog = np.asarray(res.model.exog)
+    k = getattr(res.model, 'k_fe', exog.shape[1])
+    cell_row = {cell: exog[i, :k] for i, cell in enumerate(zip(d['_time_'], d['_group_']))}
     rows = []
     for tp in tps:
         for ga, gb in itertools.combinations(groups, 2):
             row = {TP: tp, 'Group A': ga, 'Group B': gb, 'Difference (B − A)': np.nan, 'SE': np.nan, 'p_unc': np.nan}
-            if (str(tp), ga) in present and (str(tp), gb) in present:
+            a_key, b_key = (str(tp), ga), (str(tp), gb)
+            if a_key in cell_row and b_key in cell_row:
                 try:
-                    cells = pd.DataFrame({'_time_': [str(tp)] * 2, '_group_': [ga, gb]})
-                    X = np.asarray(build_design_matrices([design_info], cells)[0])
-                    L = (X[1] - X[0])[:k].reshape(1, -1)
+                    L = (cell_row[b_key] - cell_row[a_key]).reshape(1, -1)
                     tt = res.t_test(L)
                     row.update({'Difference (B − A)': float(np.ravel(tt.effect)[0]),
                                 'SE': float(np.ravel(tt.sd)[0]),
@@ -407,23 +415,33 @@ def _gee_family(choice, a, notes):
     return fam, choice
 
 
+class _Autoregressive(sm.cov_struct.Autoregressive):
+    """statsmodels sets dep_params to int 0 when the lag-1 correlation is ~0, which then
+    crashes for subjects with exactly 2 observations (int matrix divided in place)."""
+    def update(self, params):
+        super().update(params)
+        self.dep_params = float(self.dep_params)
+
+
 def _fit_gee(d, a, family, cov, notes):
     fam, fam_name = _gee_family(family, a, notes)
     tp_index = d[TP].map({t: i for i, t in enumerate(a['timepoints'])}).values
-    covs = {'autoregressive': sm.cov_struct.Autoregressive, 'exchangeable': sm.cov_struct.Exchangeable,
+    covs = {'autoregressive': _Autoregressive, 'exchangeable': sm.cov_struct.Exchangeable,
             'independence': sm.cov_struct.Independence}
-    order = ['autoregressive', 'exchangeable'] if cov == 'auto' else [cov]
+    # AR(1) cannot be estimated when the correlation is ~1, so it falls back to exchangeable.
+    order = ['autoregressive', 'exchangeable'] if cov in ('auto', 'autoregressive') else [cov]
+    cov_type = 'bias_reduced' if d[SUBJ].nunique() < GEE_SMALL_N else 'robust'
     err = None
     for c in order:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 res = smf.gee(_LONG_FORMULA, groups=d[SUBJ], data=d, time=tp_index,
-                              cov_struct=covs[c](), family=fam).fit()
-            if cov == 'auto' and c != order[0]:
+                              cov_struct=covs[c](), family=fam).fit(cov_type=cov_type)
+            if c != order[0]:
                 notes.append(('warning', "Autoregressive working correlation failed to fit; fell back to "
                                          "**Exchangeable**."))
-            return res, fam_name, c
+            return res, fam_name, c, cov_type
         except Exception as e:
             err = e
     raise RuntimeError(f"GEE failed to fit: {err}")
@@ -561,10 +579,10 @@ def run_analysis(df: pd.DataFrame, test: str = 'auto', posthoc: str = 'auto',
             comps = _model_contrasts(res, d, groups, tps)
             result['details']['random_intercept_var'] = float(res.cov_re.iloc[0, 0])
         elif test == 'gee':
-            res, fam, cov = _fit_gee(d, a, gee_family, gee_cov, notes)
+            res, fam, cov, cov_type = _fit_gee(d, a, gee_family, gee_cov, notes)
             result['omnibus'] = _wald_table(res)
             comps = _model_contrasts(res, d, groups, tps)
-            result['details'].update({'family': fam, 'cov_struct': cov})
+            result['details'].update({'family': fam, 'cov_struct': cov, 'cov_type': cov_type})
         else:
             result['omnibus'], comps = _cross_sectional(d, test, posthoc, groups, tps)
     except Exception as e:
@@ -605,8 +623,10 @@ def methods_text(result: dict, metric_name: str = "the outcome") -> str:
                      "missing timepoints. Fixed effects were tested with Wald χ² tests.")
     elif test == 'gee':
         det = result['details']
+        se_text = ("Mancl-DeRouen bias-reduced robust standard errors" if det.get('cov_type') == 'bias_reduced'
+                   else "robust standard errors")
         parts.append(f"{metric_name} was analysed with generalized estimating equations ({det.get('family', '')} "
-                     f"family, {det.get('cov_struct', '')} working correlation, robust standard errors) with time, "
+                     f"family, {det.get('cov_struct', '')} working correlation, {se_text}) with time, "
                      "group and their interaction as factors. Terms were tested with Wald χ² tests.")
     else:
         each = " at each timepoint separately" if a['n_timepoints'] > 1 else ""
@@ -652,6 +672,22 @@ if __name__ == "__main__":
     assert not a2['balanced']
     assert any('listwise' in m for _, m in assess_fit('mixed_anova', 'model', DEFAULT_CORRECTION, a2))
     assert run_analysis(unb, 'mixed_anova')['details']['n_dropped'] == 1
+    # GEE AR(1) with ~0 within-subject correlation and a 2-observation subject (statsmodels int bug).
+    iid = unb.assign(**{Y: rng.normal(size=len(unb))})
+    for cov in ('autoregressive', 'auto'):
+        r = run_analysis(iid, 'gee', gee_cov=cov)
+        assert r['error'] is None and r['details']['cov_struct'] == 'autoregressive', (cov, r['error'], r['details'])
+    # Small-sample GEE (24 subjects): bias-reduced SEs, larger than plain sandwich SEs, and no warning.
+    g = run_analysis(df, 'gee', gee_cov='exchangeable')
+    assert g['details']['cov_type'] == 'bias_reduced' and 'Mancl' in g['methods']
+    assert not any(lvl == 'warning' for lvl, _ in g['notes']), g['notes']
+    plain = smf.gee(_LONG_FORMULA, groups=_prep(df)[SUBJ], data=_prep(df),
+                    cov_struct=sm.cov_struct.Exchangeable()).fit()
+    assert (_model_contrasts(plain, _prep(df), a['groups'], a['timepoints'])['SE'] < g['comparisons']['SE']).all()
+    # 2 subjects per group over time: Auto falls back to per-timepoint tests instead of an error.
+    tiny = df[df[SUBJ].str[1].isin(['0', '1'])]
+    t_rec = recommend(check_assumptions(tiny))[0]
+    assert TESTS[t_rec][1] != 'long' and run_analysis(tiny)['error'] is None, t_rec
     overl = pd.concat([df, df[df[GRP] == 'A'].assign(**{GRP: 'C'})])
     assert run_analysis(overl, 'lmm')['error'].startswith("8 subject(s)")
     assert p_to_stars(0.00001) == "****" and p_to_stars(0.2) == "ns"

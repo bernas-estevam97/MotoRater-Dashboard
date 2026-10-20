@@ -57,7 +57,9 @@ unequal variances). Leaving the test on **Auto** applies the recommendation sepa
 survivor bias. The **mixed-effects model** (random intercept per subject, like Prism's mixed-effects analysis) keeps
 every available data point. **GEE** uses robust "sandwich" standard errors and a Gaussian, Gamma (log link) or Poisson
 family (chosen automatically or by you) with an autoregressive, exchangeable or independent working correlation. With
-few subjects (< 40) GEE standard errors tend to be too small, so the app warns you.
+few subjects (< 40) plain sandwich errors are too small, so the app switches to the Mancl-DeRouen bias-reduced
+version. Repeated-measures models need at least 3 subjects per group; with fewer, *Auto* tests each timepoint
+separately instead.
 
 **Model-based contrasts** compare each pair of groups at each timepoint using the fitted model's covariance (the pooled
 repeated-measures error term, as Prism does), rather than treating timepoints as independent samples. Omnibus effects

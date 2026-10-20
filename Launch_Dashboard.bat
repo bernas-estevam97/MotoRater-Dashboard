@@ -88,7 +88,7 @@ call :step 5 "Installing app dependencies (this can take several minutes)..."
 call :install_deps || goto :error
 
 call :step 6 "Verifying installation..."
-"%PYTHON_EXE%" -c "import streamlit, pandas, polars, statsmodels, pingouin" >> "%LOG%" 2>&1 || goto :error
+"%PYTHON_EXE%" -c "import streamlit, pandas, statsmodels, pingouin" >> "%LOG%" 2>&1 || goto :error
 
 type NUL > "%MARKER_FILE%"
 del "%LOG%" 2>nul

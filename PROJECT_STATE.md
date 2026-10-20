@@ -106,9 +106,9 @@ MotoRater-Dashboard/
   - Corrections: Holm, Šídák, Holm-Šídák, Bonferroni, BH-FDR, two-stage BKY, none.
 * `assess_fit()` warns when a choice does not fit the data (non-normal residuals with parametric tests, unequal
   variances with Student/ordinary ANOVA/Tukey, RM ANOVA with missing timepoints, per-timepoint tests on repeated
-  measures, GEE with < 40 subjects, no correction with many comparisons) and blocks overlapping groups.
+  measures, no correction with many comparisons) and blocks overlapping groups.
 * Fixes: mixed-model fitting now tries several optimizers (lbfgs alone hit singular matrices and silently fell back to
-  OLS); model contrasts are built from the design matrix so they work for any group pair; omnibus tests for LMM/GEE use
+  OLS); model contrasts are built from the fitted model's design rows so they work for any group pair; omnibus tests for LMM/GEE use
   sum-to-zero coding (Type III-style Wald χ²); HDF5 uploads now load (HDFStore cannot read a BytesIO buffer).
 
 ### H. Kinematics UI Reorganization (`prod_pro`, 2026-10-12)
@@ -129,6 +129,40 @@ MotoRater-Dashboard/
   updates, shows the last lines of the install log on failure, restarts from the fresh copy after self-healing.
 * `Update_Launch_App.bat` reduced to a prompt plus calls to `Updater.bat` and `Launch_Dashboard.bat` (no duplicate
   installer code). `Launch_Dashboard.command` (macOS) now follows `prod_pro`.
+
+### J. Library Compatibility Fixes (`prod_pro`, 2026-10-20, ported from `pro-cloud`)
+* Root cause: `requirements.txt` had no version bounds, so any fresh install (Streamlit Cloud, or the launchers
+  re-installing dependencies) got statsmodels 0.15 / pandas 3 / polars 2, while the existing local venv stayed on
+  statsmodels 0.14.6 / pandas 2.3. Found on Cloud first; same code, so fixed here too.
+* **RM ANOVA, mixed-effects model and GEE failed** with `'PandasData' object has no attribute 'design_info'`
+  (statsmodels 0.15 removed it). `_model_contrasts` now takes each time × group design row from the fitted model's
+  own `exog`, so it no longer depends on patsy internals. Unused `patsy` import removed.
+* **Kinematics page crashed the Python process** (access violation in `pl.from_pandas`, polars 2.0 + pandas 3).
+  `build_final_df` now uses the same pandas merge / mean as the batch exporter. polars removed from the page,
+  the `main.py` pre-warm and `requirements.txt`.
+* **GEE with Autoregressive working correlation failed** on some data:
+  - statsmodels sets the AR parameter to int `0` when the lag-1 correlation is ~0, which crashes for subjects with
+    exactly 2 observations. A small `_Autoregressive` subclass casts it to float.
+  - When AR(1) cannot be estimated (correlation ~1), the fit now falls back to Exchangeable with a warning, also when
+    Autoregressive was chosen explicitly (previously only in Auto mode).
+* `requirements.txt` now uses version ranges between the two tested sets (local venv and latest Cloud releases), with
+  caps below untested major releases. Removed packages the app never imports: `polars`, `xarray`, and the pingouin
+  dependencies `scikit-learn`, `seaborn`, `pandas-flavor` (pingouin installs them itself). `psutil` stays on this
+  branch (memory monitor in the local time-series pages). The pinned set needs **Python 3.11+**.
+* Launchers: install checks no longer import `polars` (a fresh install would otherwise fail verification).
+  `Launch_Dashboard.command` stops with a clear message when the Mac's `python3` is older than 3.11, and its fallback
+  package list matches `requirements.txt`. `Launch_Dashboard.bat` already downloads Python 3.12.
+* Verification: `stats_engine.py` self-check (new GEE AR(1) regression case) passes on statsmodels 0.14.6 and 0.15.0;
+  21 cross-checks against scipy / statsmodels / pingouin / hand calculations pass on both; a scripted Streamlit
+  `AppTest` run of 870 page interactions (tests, post-hocs, corrections, GEE options, plot settings, units, batch
+  export) on the latest Cloud package set showed no crash or exception.
+* Recommendation no longer contradicts its own fit check:
+  - **GEE small samples:** with < 40 subjects (`GEE_SMALL_N`) GEE now uses Mancl-DeRouen bias-reduced sandwich
+    standard errors (`cov_type='bias_reduced'`). The former "optimistic p-values" warning is now an info note, and the
+    methods text names the correction.
+  - **< 3 subjects in a group with 2+ timepoints:** Auto used to recommend a repeated-measures model that the fit check
+    then blocked (nothing ran). It now recommends the matching per-timepoint test and says why.
+  - Both cases are covered by the `stats_engine.py` self-check; `stat_info.py` text updated.
 
 ---
 
@@ -152,3 +186,7 @@ MotoRater-Dashboard/
 * **[2026-10-12]** (`prod_pro`): `docs/Info Statistical Analysis.docx/.pdf` rewritten for the new workflow (test
   selection, fit warnings, Omnibus / Multiple comparisons / Assumptions / Methods tabs, corrections, Prism stars);
   generated with Microsoft Word. `.gitignore` extended (lab data files, secrets, launcher artefacts, editor/OS files).
+* **[2026-10-20]** (`prod_pro`): ported the `pro-cloud` fixes for failures caused by newer libraries (statsmodels 0.15 `design_info`
+  error in RM ANOVA / LMM / GEE, polars 2.0 crash on the kinematics page, GEE autoregressive failures); polars removed;
+  `requirements.txt` given tested version ranges and trimmed to packages the app imports. GEE uses bias-reduced
+  standard errors below 40 subjects; Auto avoids repeated-measures models when a group has < 3 subjects. See section J.
