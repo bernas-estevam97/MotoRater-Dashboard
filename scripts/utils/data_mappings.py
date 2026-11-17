@@ -25,9 +25,11 @@ column_rename_map = {
     "Shoulder Height (Right)": "Shoulder Height (Right) (m)",
     "Shoulder Height (Left)": "Shoulder Height (Left) (m)",
 
+    # Protraction/Retraction = Euclidean distance hind toe -> PSIS (a length, not an angle)
+    "Protraction/Retraction (Right)": "Protraction/Retraction (Right) (m)",
+    "Protraction/Retraction (Left)": "Protraction/Retraction (Left) (m)",
+
     # Angles
-    "Protraction/Retraction (Right)": "Protraction/Retraction (Right) (º)",
-    "Protraction/Retraction (Left)": "Protraction/Retraction (Left) (º)",
     "Hip Angle (Right)": "Hip Angle (Right) (º)",
     "Knee Angle (Right)": "Knee Angle (Right) (º)",
     "Hip Angle (Left)": "Hip Angle (Left) (º)",

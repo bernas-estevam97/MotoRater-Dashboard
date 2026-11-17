@@ -104,13 +104,60 @@ def is_variability_sheet(name: str) -> bool:
     return bool(re.search(r'\b(std|sd|cv|var|variance)\b', str(name), re.IGNORECASE))
 
 
-def build_final_df(df_sheet, mapping, metric, group_order):
-    """Join measurements to the ID mapping and average trials per subject x timepoint."""
+def row_key(df: pd.DataFrame, cfg: dict) -> pd.Series:
+    """Metadata mode: one key per subject x timepoint row ('2199_1R|3'), shared by every sheet."""
+    return df[cfg['subject']].astype(str).str.strip() + '|' + df[cfg['timepoint']].astype(str).str.strip()
+
+
+@st.cache_data(show_spinner=False)
+def with_row_keys(_data: dict, key: str, cfg_items: tuple) -> dict:
+    """Metadata mode: replace 'Ids' by the subject|timepoint key in every sheet that has the metadata
+    columns, so the rest of the page can keep joining on 'Ids'. ID mode: unchanged."""
+    cfg = dict(cfg_items)
+    if not cfg:
+        return _data
+    need = [cfg['subject'], cfg['timepoint']]
+    return {s: (df.assign(Ids=row_key(df, cfg)) if all(c in df.columns for c in need) else df)
+            for s, df in _data.items()}
+
+
+def extract_sex(id_str: str):
+    """'M' / 'F' from a '_M_' / '_Female' style token in a trial ID, else None."""
+    for tok in re.split(r'[_\-\s]+', str(id_str).upper()):
+        if tok in ('M', 'MALE'):
+            return 'M'
+        if tok in ('F', 'FEMALE'):
+            return 'F'
+    return None
+
+
+def session_label(mapping: pd.DataFrame) -> pd.Series:
+    return mapping['Subject_ID'].astype(str) + ' @ ' + mapping[TP].map(lambda v: f"{v:g}" if pd.notna(v) else "?")
+
+
+def lr_disagreement(df_sheet, metric):
+    """For an '(L/R mean)' measurement: (correlation, relative mean difference) of its two sides."""
+    left = metric.replace('(L/R mean)', '(Left)') if '(L/R mean)' in metric else metric.replace('L/R mean', 'Left')
+    right = left.replace('(Left)', '(Right)') if '(Left)' in left else left.replace('Left', 'Right')
+    if left not in df_sheet or right not in df_sheet:
+        return None
+    lv, rv = pd.to_numeric(df_sheet[left], errors='coerce'), pd.to_numeric(df_sheet[right], errors='coerce')
+    scale = (abs(lv.mean()) + abs(rv.mean())) / 2
+    return lv.corr(rv), (abs(lv.mean() - rv.mean()) / scale if scale else np.nan)
+
+
+def build_final_df(df_sheet, mapping, metric, group_order, cov=None):
+    """Join measurements to the ID mapping and average trials per subject x timepoint.
+    cov: optional DataFrame ['Ids', se.COV] merged in as a covariate (also averaged)."""
     # Plain pandas: pl.from_pandas segfaulted under Streamlit with polars 2.0 + pandas 3.
     out = pd.merge(df_sheet[['Ids', metric]].astype({'Ids': str}), mapping.astype({'Ids': str}), on='Ids')
     out[metric] = pd.to_numeric(out[metric], errors='coerce')
-    keys = ['Subject_ID', 'Group', TP] + [c for c in (se.COHORT, se.SETUP) if c in mapping.columns]
-    out = out.dropna(subset=[metric]).groupby(keys, as_index=False)[metric].mean()
+    values = [metric]
+    if cov is not None:
+        out = out.merge(cov.astype({'Ids': str}).drop_duplicates('Ids'), on='Ids', how='left')
+        values.append(se.COV)
+    keys = ['Subject_ID', 'Group', TP] + [c for c in (se.COHORT, se.SETUP, se.SEX) if c in mapping.columns]
+    out = out.dropna(subset=[metric]).groupby(keys, as_index=False)[values].mean()
     out['_metric_'] = out[metric].astype(float)
     out['Group'] = pd.Categorical(out['Group'], categories=group_order)
     return out.sort_values([TP, 'Group'])
@@ -122,9 +169,10 @@ def cached_assumptions(final_df, alpha):
 
 
 @st.cache_data(show_spinner="Running statistics...")
-def cached_analysis(final_df, test, posthoc, correction, alpha, gee_family, gee_cov, metric, _assumptions, log_y):
+def cached_analysis(final_df, test, posthoc, correction, alpha, gee_family, gee_cov, metric, _assumptions, log_y,
+                    adjust_sex):
     return se.run_analysis(final_df, test, posthoc, correction, alpha, gee_family, gee_cov, metric, _assumptions,
-                           log_y)
+                           log_y, adjust_sex)
 
 
 def apply_cohorts(mapping, table):
@@ -150,11 +198,20 @@ def apply_cohorts(mapping, table):
 def active_mapping():
     mapping = apply_cohorts(st.session_state.mapping_df, st.session_state.get('cohort_table'))
     excluded = st.session_state.get('exclude_subjects_ui')
-    return mapping[~mapping['Subject_ID'].isin(excluded)] if excluded else mapping
+    if excluded:
+        mapping = mapping[~mapping['Subject_ID'].isin(excluded)]
+    sessions = st.session_state.get('exclude_sessions_ui')
+    if sessions:
+        mapping = mapping[~session_label(mapping).isin(sessions)]
+    return mapping
 
 
 def metric_columns(df):
-    return [c for c in df.columns if c != 'Ids']
+    """Numeric measurement columns (metadata columns such as group, sex or timepoint excluded)."""
+    meta = set(st.session_state.get('meta_cols', ())) | {'Ids'}
+    # "Mostly numeric" rather than dtype, so a stray text cell does not hide a measurement.
+    return [c for c in df.columns if c not in meta
+            and (pd.api.types.is_numeric_dtype(df[c]) or pd.to_numeric(df[c], errors='coerce').notna().mean() > 0.5)]
 
 
 # ---------------------------------------------------------------------------
@@ -162,8 +219,9 @@ def metric_columns(df):
 # ---------------------------------------------------------------------------
 @st.fragment
 def render_plot_section(final_df, comparisons, color_map, plot_metric, timepoints, annotation_color,
-                        plot_width, plot_height):
-    """Isolated rerun fragment: changing plot options never re-runs the statistics."""
+                        plot_width, plot_height, trend=None):
+    """Isolated rerun fragment: changing plot options never re-runs the statistics.
+    trend: optional fitted progression curve (Group, TP, Fit) drawn as dashed lines."""
     two_groups = final_df['Group'].nunique() == 2
     c1, c2, c3 = st.columns(3)
     plot_format = c1.selectbox("Plot type", ["Line Plot", "Bar Plot", "Box Plot", "Violin Plot"])
@@ -175,10 +233,18 @@ def render_plot_section(final_df, comparisons, color_map, plot_metric, timepoint
                              help="Available for 2-group comparisons. With 3+ groups see the "
                                   "Multiple comparisons tab.")
 
+    show_trend = trend is not None and st.checkbox(
+        "Show fitted progression trend", value=True, key="show_trend",
+        help="Dashed lines: the progression model's average curve per group (what the Level and Rate tests compare).")
+
     with st.expander("Axis settings", expanded=False):
-        x1, x2 = st.columns(2)
+        x1, x2, x3 = st.columns(3)
         force_exact_ticks = x1.checkbox("Label every timepoint", value=True)
         custom_x_range = x2.checkbox("Custom X-axis range", value=False)
+        positive = bool((final_df[plot_metric] > 0).all())
+        log_axis = x3.checkbox("Log-scale Y axis", value=False, disabled=not positive, key="log_axis",
+                               help="Original units, logarithmic spacing: equal % differences look equally "
+                                    "large. Needs strictly positive values.") and positive
         if custom_x_range:
             lo, hi = float(min(timepoints)), float(max(timepoints))
             margin = (hi - lo) * 0.1 if hi != lo else 1.0
@@ -210,6 +276,14 @@ def render_plot_section(final_df, comparisons, color_map, plot_metric, timepoint
     if custom_x_range:
         xaxis['range'] = [x_min, x_max]
     fig.update_layout(xaxis=xaxis)
+    if log_axis:
+        fig.update_yaxes(type='log')
+
+    if show_trend:
+        for g, cur in trend.assign(Group=trend['Group'].astype(str)).groupby('Group', sort=False):
+            cur = cur.sort_values(TP)
+            fig.add_scatter(x=cur[TP], y=cur['Fit'], mode='lines', name=f"{g} (model)",
+                            line=dict(dash='dash', width=2, color=color_map.get(g)))
 
     if show_stars and two_groups and not comparisons.empty and TP in comparisons.columns:
         y_max, y_min = plot_df[plot_metric].max(), plot_df[plot_metric].min()
@@ -228,7 +302,10 @@ def render_plot_section(final_df, comparisons, color_map, plot_metric, timepoint
             top = max(top, y_tp + offset)
             fig.add_annotation(x=tp, y=y_tp + offset, text=star, showarrow=False,
                                font=dict(size=14 if star == "ns" else 22, color=annotation_color, family="Arial"))
-        fig.update_layout(yaxis=dict(range=[y_min - offset * 0.5, top + offset * 1.5]))
+        lo_hi = [y_min - offset * 0.5, top + offset * 1.5]
+        if log_axis:   # plotly expects log10 bounds on a log axis
+            lo_hi = [np.log10(max(y_min * 0.9, 1e-12)), np.log10(top + offset * 1.5)]
+        fig.update_layout(yaxis=dict(range=lo_hi))
 
     fig.update_layout(margin=dict(t=50), width=plot_width, height=plot_height,
                       font=dict(family="Segoe UI Semibold", size=16))
@@ -237,20 +314,23 @@ def render_plot_section(final_df, comparisons, color_map, plot_metric, timepoint
 
 def render_single_metric_job(metric, df_sheet, mapping, timepoints, group_order, color_map,
                              plot_width, plot_height, test, posthoc, correction, alpha, gee_family, gee_cov,
-                             log_y=False):
+                             log_y=False, adjust_sex=False, cov=None):
     """Headless Matplotlib PNG renderer + statistics for one measurement (runs in a worker process)."""
-    loop = build_final_df(df_sheet, mapping, metric, group_order)
+    loop = build_final_df(df_sheet, mapping, metric, group_order, cov)
     if loop.empty or loop['Group'].nunique() < 2:
         return None, None, None
     # Log needs positive values; a metric that crosses zero is analysed on the raw scale.
     log_y = log_y and bool((loop['_metric_'] > 0).all())
 
+    trend = None
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            res = se.run_analysis(loop, test, posthoc, correction, alpha, gee_family, gee_cov, metric, log_y=log_y)
+            res = se.run_analysis(loop, test, posthoc, correction, alpha, gee_family, gee_cov, metric, log_y=log_y,
+                                  adjust_sex=adjust_sex)
         comps = res['comparisons'] if res['error'] is None else pd.DataFrame()
         stats_rows = comps.assign(Measurement=metric, Test=se.label(res['test'])) if not comps.empty else None
+        trend = res['details'].get('trend')
     except Exception:
         comps, stats_rows = pd.DataFrame(), None
 
@@ -263,6 +343,11 @@ def render_single_metric_job(metric, df_sheet, mapping, timepoints, group_order,
         if not g.empty:
             ax.errorbar(g[TP], g[metric], yerr=g['SEM'], marker='o', linewidth=2, markersize=6, capsize=4,
                         label=group, color=color_map.get(group))
+        if trend is not None:
+            cur = trend[trend['Group'].astype(str) == str(group)].sort_values(TP)
+            if not cur.empty:
+                ax.plot(cur[TP], cur['Fit'], linestyle='--', linewidth=1.8, color=color_map.get(group),
+                        label=f"{group} (model)")
     ax.set_title(f"Longitudinal progression of {metric}", fontsize=13)
     ax.set_xlabel("Timepoint (Weeks)")
     ax.set_ylabel(metric)
@@ -336,7 +421,8 @@ file_key = f"{uploaded_file.name}:{hashlib.md5(file_bytes).hexdigest()}"
 if st.session_state.get('uploaded_filename') != file_key:
     st.session_state.data_dict = load_data(file_bytes, uploaded_file.name)
     st.session_state.uploaded_filename = file_key
-    for key in ('mapping_df', 'group_definitions_final', 'exclude_subjects_ui'):
+    for key in ('mapping_df', 'group_definitions_final', 'exclude_subjects_ui', 'exclude_sessions_ui',
+                'meta_cfg', 'meta_cols'):
         st.session_state.pop(key, None)
 
 raw_data_dict = st.session_state.data_dict
@@ -369,15 +455,19 @@ with st.sidebar:
                                help="Applies to on-screen plots and exported PNGs.")
         plot_height = st.slider("Plot height (px)", 400, 1600, 600, 50)
 
-data_dict = add_lr_means(convert_units(raw_data_dict, file_key, distance_unit),
+data_base = add_lr_means(convert_units(raw_data_dict, file_key, distance_unit),
                          f"{file_key}:{distance_unit}", lr_means)
+# Metadata mode: every sheet gets a subject|timepoint row key in 'Ids' (set when variables are extracted).
+meta_cfg = st.session_state.get('meta_cfg') or {}
+data_dict = with_row_keys(data_base, f"{file_key}:{distance_unit}:{lr_means}",
+                          tuple((k, meta_cfg[k]) for k in ('subject', 'timepoint') if k in meta_cfg))
 
 tab_data, tab_groups, tab_stats, tab_radar = st.tabs([
     "📂 Data", "🧪 Groups & Subjects", "🧮 Statistical Analysis", "🕸️ Radar Profile"])
 
 # --- TAB: DATA ---
 with tab_data:
-    first_df = data_dict[sheet_names[0]]
+    first_df = data_base[sheet_names[0]]
     n_ids = first_df['Ids'].nunique() if 'Ids' in first_df.columns else 0
     k1, k2, k3 = st.columns(3)
     k1.metric("Sheets", len(sheet_names))
@@ -385,7 +475,7 @@ with tab_data:
     k3.metric("Unique trial IDs", n_ids)
 
     selected_sheet = st.selectbox("Sheet", sheet_names, key="viewer_sheet_select")
-    st.dataframe(data_dict[selected_sheet], width='stretch', height=420)
+    st.dataframe(data_base[selected_sheet], width='stretch', height=420)
     with st.expander("Trial IDs found", expanded=False):
         if 'Ids' in first_df.columns:
             st.dataframe(pd.DataFrame({"Ids": first_df['Ids'].unique()}), width='stretch', hide_index=True)
@@ -394,58 +484,140 @@ with tab_data:
 
 # --- TAB: GROUPS & SUBJECTS ---
 with tab_groups:
-    st.subheader("Define groups and parse timepoints")
-    st.markdown("**Group Name** is shown on plots. **Tag in ID** is the text searched for in each trial ID "
-                "(longest tags are matched first).")
+    st.subheader("Define groups and timepoints")
+    first_raw = data_base[sheet_names[0]]
+    text_cols = [c for c in first_raw.columns
+                 if c != 'Ids' and not pd.api.types.is_numeric_dtype(first_raw[c])]
+    modes = ["Trial IDs (tags inside each ID)", "Metadata columns"]
+    mode = st.radio("Extract variables from", modes, index=1 if text_cols else 0, horizontal=True,
+                    key="extract_mode",
+                    help="Trial IDs: group, timepoint and sex are read from IDs like 2199_1R_44W_FOOTPRINT_WT_F. "
+                         "Metadata columns: the file has columns such as animal, group, sex and timepoint.")
 
-    if 'group_definitions' not in st.session_state:
-        st.session_state.group_definitions = pd.DataFrame({
-            "Group Name": ["Wildtype", "Transgenic", "WT Male", "WT Female", "TG Male", "TG Female"],
-            "Tag in ID": ["WT", "TG", "WT_M", "WT_F", "TG_M", "TG_F"],
-        })
-    edited_groups = st.data_editor(st.session_state.group_definitions, num_rows="dynamic", width='stretch',
-                                   hide_index=True, key="groups_editor")
+    if mode == modes[0]:
+        st.markdown("**Group Name** is shown on plots. **Tag in ID** is matched as a whole part of the ID "
+                    "between `_` separators (e.g. `TG` matches `..._TG_F` but not `ATG1`; `TG_F` matches "
+                    "`..._TG_F`). Sex is read from an `M`/`F` part of the ID when present.")
+        if 'group_definitions' not in st.session_state:
+            st.session_state.group_definitions = pd.DataFrame({
+                "Group Name": ["Wildtype", "Transgenic", "WT Male", "WT Female", "TG Male", "TG Female"],
+                "Tag in ID": ["WT", "TG", "WT_M", "WT_F", "TG_M", "TG_F"],
+            })
+        edited_groups = st.data_editor(st.session_state.group_definitions, num_rows="dynamic", width='stretch',
+                                       hide_index=True, key="groups_editor")
 
-    first_df = data_dict[sheet_names[0]]
-    clicked = st.button("Extract variables from IDs", type="primary", key="extract_vars_btn")
-    if clicked and 'Ids' not in first_df.columns:
-        st.error("Could not find an 'Ids' column to extract from.")
-    elif clicked:
-        valid_groups = edited_groups.dropna(how='all').copy()
-        valid_groups["Tag in ID"] = valid_groups["Tag in ID"].astype(str).str.strip()
-        valid_groups["Group Name"] = valid_groups["Group Name"].astype(str).str.strip()
-        valid_groups = valid_groups[valid_groups["Tag in ID"] != ""]
-        valid_groups = valid_groups.sort_values("Tag in ID", key=lambda c: c.str.len(), ascending=False)
+        clicked = st.button("Extract variables", type="primary", key="extract_vars_btn")
+        if clicked and 'Ids' not in first_raw.columns:
+            st.error("Could not find an 'Ids' column to extract from. Try **Metadata columns**.")
+        elif clicked:
+            valid_groups = edited_groups.dropna(how='all').copy()
+            valid_groups["Tag in ID"] = valid_groups["Tag in ID"].astype(str).str.strip()
+            valid_groups["Group Name"] = valid_groups["Group Name"].astype(str).str.strip()
+            valid_groups = valid_groups[valid_groups["Tag in ID"] != ""]
 
-        def extract_timepoint(id_str):
-            m = re.search(r'(\d+)[Ww]', id_str) or re.search(r'[Tt](\d+)', id_str)
-            return int(m.group(1)) if m else None
+            def norm(s):
+                return "_" + re.sub(r'[\-\s]+', '_', str(s).upper()) + "_"
 
-        def extract_subject_id(id_str):
-            tokens = id_str.split('_')
-            for i, token in enumerate(tokens):
-                if re.fullmatch(r'(?:[Ww]eek\s*)?\d+\s*[Ww]|[Ww]\s*\d+|[Tt]\s*\d+|\d+\s*[Tt]', token):
-                    return "_".join(tokens[:i])
-            return tokens[0]
+            def extract_timepoint(id_str):
+                m = re.search(r'(\d+)[Ww]', id_str) or re.search(r'[Tt](\d+)', id_str)
+                return int(m.group(1)) if m else None
 
-        records = []
-        for id_str in first_df['Ids'].unique():
-            s = str(id_str)
-            matched = [r["Group Name"] for _, r in valid_groups.iterrows() if r["Tag in ID"].upper() in s.upper()]
-            for grp in matched or ["Unknown"]:
-                records.append({"Ids": id_str, TP: extract_timepoint(s), "Subject_ID": extract_subject_id(s),
-                                "Group": grp})
-        st.session_state.mapping_df = pd.DataFrame(records)
-        st.session_state.group_definitions_final = valid_groups
-        st.rerun()
+            def extract_subject_id(id_str):
+                tokens = id_str.split('_')
+                for i, token in enumerate(tokens):
+                    if re.fullmatch(r'(?:[Ww]eek\s*)?\d+\s*[Ww]|[Ww]\s*\d+|[Tt]\s*\d+|\d+\s*[Tt]', token):
+                        return "_".join(tokens[:i])
+                return tokens[0]
+
+            tags = [(r["Group Name"], norm(r["Tag in ID"])) for _, r in valid_groups.iterrows()]
+            records = []
+            for id_str in first_raw['Ids'].unique():
+                s = str(id_str)
+                matched = [name for name, tag in tags if tag in norm(s)]
+                for grp in matched or ["Unknown"]:
+                    records.append({"Ids": id_str, TP: extract_timepoint(s), "Subject_ID": extract_subject_id(s),
+                                    "Group": grp, se.SEX: extract_sex(s)})
+            mapping = pd.DataFrame(records)
+            if mapping[se.SEX].notna().any():
+                mapping[se.SEX] = mapping[se.SEX].fillna('Unknown')
+            else:
+                mapping = mapping.drop(columns=se.SEX)
+            st.session_state.mapping_df = mapping
+            st.session_state.group_definitions_final = valid_groups
+            st.session_state.meta_cfg, st.session_state.meta_cols = {}, []
+            st.rerun()
+    else:
+        cols = list(first_raw.columns)
+
+        def guess(words, default=None):
+            return next((c for c in cols if any(w in str(c).lower() for w in words)), default)
+
+        st.markdown("Pick which columns describe each row. Several group columns are combined "
+                    "(e.g. *Experimental Group* + *Gender* → `WT F`). Rows of the same animal and timepoint "
+                    "(several trials) are averaged.")
+        m1, m2, m3 = st.columns(3)
+        subj_col = m1.selectbox("Animal / subject column", cols,
+                                index=cols.index(guess(['animal', 'subject', 'ids', 'id'], cols[0])), key="meta_subject")
+        tp_guess = guess(['timepoint', 'week', 'time', 'age'])
+        tp_col = m2.selectbox("Timepoint column", cols, index=cols.index(tp_guess) if tp_guess else 0,
+                              key="meta_tp")
+        weeks_per = m3.number_input("Weeks per timepoint unit", min_value=0.001, value=1.0, step=1.0,
+                                    key="meta_weeks_per",
+                                    help="Converts the timepoint column to weeks. 1 if it already holds weeks; "
+                                         "4 if timepoint 1 = week 4, 2 = week 8, …")
+        m4, m5 = st.columns(2)
+        grp_guess = guess(['group', 'genotype', 'condition'])
+        group_cols = m4.multiselect("Group column(s)", cols, default=[grp_guess] if grp_guess else [],
+                                    key="meta_groups")
+        sex_guess = guess(['sex', 'gender'])
+        sex_opts = ["None"] + cols
+        sex_col = m5.selectbox("Sex column (optional)", sex_opts,
+                               index=sex_opts.index(sex_guess) if sex_guess else 0, key="meta_sex",
+                               help="Enables 'Adjust for sex' in the progression model.")
+
+        clicked = st.button("Extract variables", type="primary", key="extract_vars_btn")
+        if clicked and not group_cols:
+            st.error("Pick at least one group column.")
+        elif clicked:
+            cfg = {'subject': subj_col, 'timepoint': tp_col}
+            mapping = pd.DataFrame({
+                'Ids': row_key(first_raw, cfg),
+                TP: pd.to_numeric(first_raw[tp_col], errors='coerce') * weeks_per,
+                'Subject_ID': first_raw[subj_col].astype(str).str.strip(),
+                'Group': first_raw[group_cols].astype(str).apply(lambda r: " ".join(v.strip() for v in r), axis=1),
+            })
+            mapping.loc[first_raw[group_cols].isna().any(axis=1), 'Group'] = "Unknown"
+            if sex_col != "None":
+                sx = first_raw[sex_col].astype(str).str.strip().str.upper()
+                mapping[se.SEX] = sx.replace({'MALE': 'M', 'FEMALE': 'F', 'NAN': 'Unknown', '': 'Unknown'})
+            st.session_state.mapping_df = mapping.drop_duplicates('Ids').reset_index(drop=True)
+            st.session_state.meta_cfg = cfg
+            st.session_state.meta_cols = [subj_col, tp_col, *group_cols] + ([sex_col] if sex_col != "None" else [])
+            st.rerun()
 
     if 'mapping_df' in st.session_state:
         mapping_all = st.session_state.mapping_df
         st.success("Variables extracted. Group colors are now available in the sidebar.")
+        if st.session_state.get('meta_cfg'):
+            # In metadata mode every row has one group, so an animal in two groups is a labelling error.
+            n_grp = mapping_all.groupby('Subject_ID')['Group'].transform('nunique')
+            odd = mapping_all[n_grp > 1]
+            if not odd.empty:
+                main = odd.groupby('Subject_ID')['Group'].agg(lambda g: g.value_counts().index[0])
+                wrong = odd[odd['Group'] != odd['Subject_ID'].map(main)]
+                st.error("Animals labelled with different groups in different rows — probably a typo in the file. "
+                         "Rows that disagree with the animal's usual group:")
+                st.dataframe(tidy(wrong[['Subject_ID', TP, 'Group']].assign(
+                    **{'Usual group': wrong['Subject_ID'].map(main)})), width='stretch', hide_index=True)
+                st.caption("Fix the file, or remove these sessions below under *Single sessions removed*.")
 
-        st.markdown("#### Exclude subjects")
-        st.multiselect("Subjects removed from every plot and statistic (e.g., outliers, dropouts):",
+        st.markdown("#### Exclude subjects or sessions")
+        e1, e2 = st.columns(2)
+        e1.multiselect("Whole animals removed from every plot and statistic (e.g. dropouts):",
                        options=sorted(mapping_all['Subject_ID'].dropna().unique()), key="exclude_subjects_ui")
+        e2.multiselect("Single sessions removed (animal @ week), e.g. a failed recording:",
+                       options=sorted(session_label(mapping_all).unique()), key="exclude_sessions_ui",
+                       help="The Statistical Analysis tab lists likely outlier sessions for each measurement.")
 
         with st.expander("Cohorts & recording setup (optional)", expanded=False):
             st.markdown("Fill this in when animals started the experiment at different times or the camera setup "
@@ -502,7 +674,7 @@ with tab_groups:
 # --- TAB: STATISTICAL ANALYSIS ---
 def analysis_tab():
     if 'mapping_df' not in st.session_state:
-        st.info("Go to **Groups & Subjects** and click **Extract variables from IDs** first.")
+        st.info("Go to **Groups & Subjects** and click **Extract variables** first.")
         return
     mapping_df = active_mapping()
     all_groups = sorted(g for g in mapping_df['Group'].unique() if g != "Unknown")
@@ -541,8 +713,15 @@ def analysis_tab():
                    "zero (e.g. signed velocity/acceleration components, toe clearance), so a coefficient of "
                    "variation is not meaningful. Use the SD sheet for this measurement instead.")
     if 'L/R mean' in plot_metric:
-        st.caption("Left and right were averaged per trial. If the two sides are filmed by different cameras or "
-                   "were affected differently by a setup change, also check each side separately.")
+        agree = lr_disagreement(df_to_plot, plot_metric)
+        if agree and (agree[0] < 0.5 or agree[1] > 0.2):
+            st.warning(f"Left and right disagree for this measurement (correlation r = {agree[0]:.2f}, means differ "
+                       f"by {agree[1]:.0%}). They probably do not measure the same thing (different camera, "
+                       "calibration or floor reference), so their average is hard to interpret. Analyse each side "
+                       "separately.")
+        else:
+            st.caption("Left and right were averaged per trial. If the two sides are filmed by different cameras "
+                       "or were affected differently by a setup change, also check each side separately.")
 
     alpha_default = st.session_state.get('stat_alpha', 0.05)
     a = cached_assumptions(final_df, alpha_default)
@@ -557,6 +736,29 @@ def analysis_tab():
                 help=f"{a['normality_test']} p = {se.fmt_p(a['normality_p'])}" if a['normality_test'] else None)
     k[4].metric("Design", "Balanced" if a['balanced'] else f"{len(a['incomplete'])} incomplete",
                 help="Balanced = every subject measured at every selected timepoint.")
+
+    # --- Outlier sessions: far from what is expected for that animal at that age ---
+    # Expected = group x week median (follows growth / disease course) + the animal's own typical offset.
+    r1 = final_df['_metric_'] - final_df.groupby(['Group', TP], observed=True)['_metric_'].transform('median')
+    dev = r1 - r1.groupby(final_df['Subject_ID']).transform('median')
+    mad = 1.4826 * dev.abs().median()
+    if mad > 0:
+        flagged = final_df.assign(**{'Robust z': dev / mad})
+        flagged = flagged[flagged['Robust z'].abs() > 5]
+        if not flagged.empty:
+            labels = session_label(flagged).tolist()
+            with st.expander(f"⚠️ {len(flagged)} possible outlier session(s) for this measurement", expanded=False):
+                st.caption("Sessions more than 5 robust SDs away from what is expected for that animal at that "
+                           "week (its group's median at that week plus the animal's usual offset) — often a "
+                           "tracking or calibration failure. Check the video before excluding.")
+                st.dataframe(tidy(flagged[['Subject_ID', 'Group', TP, plot_metric, 'Robust z']]),
+                             width='stretch', hide_index=True)
+
+                def _exclude(new=labels):
+                    st.session_state.exclude_sessions_ui = sorted(
+                        set(st.session_state.get('exclude_sessions_ui') or []) | set(new))
+                st.button("Exclude these sessions (all measurements)", key="exclude_outliers_btn", on_click=_exclude,
+                          help="Adds them to Groups & Subjects → Single sessions removed, where you can undo it.")
 
     # --- Analysis setup (Prism-style) ---
     rec_test, rec_post, rec_reason = se.recommend(a)
@@ -592,9 +794,25 @@ def analysis_tab():
                 gee_cov = e2.selectbox("Working correlation", se.GEE_COVS, key="gee_cov",
                                        format_func=str.title)
 
-        log_y = False
+        log_y, adjust_sex, cov_df, model_df = False, False, None, final_df
         if test == 'progression':
             positive = bool((final_df['_metric_'] > 0).all())
+            q1, q2 = st.columns([1, 2])
+            has_sex = se.SEX in final_df.columns and final_df[se.SEX].nunique() > 1
+            adjust_sex = q1.checkbox(
+                "Adjust for sex", value=False, disabled=not has_sex, key="adjust_sex",
+                help="Adds sex as a covariate, so you can compare e.g. WT vs TG with both sexes pooled instead of "
+                     "splitting into 4 groups. Needs sex information and both sexes in the selection.") and has_sex
+            cov_map = {f"{s} → {c}": (s, c) for s in sheet_names for c in metric_columns(data_dict[s])}
+            cov_choice = q2.selectbox(
+                "Covariate (optional)", ["None"] + list(cov_map), key="prog_cov",
+                help="E.g. walking speed or run duration: removes its influence from the group comparison. "
+                     "Avoid covariates the genotype itself changes (that would remove part of the real effect).")
+            if cov_choice in cov_map:
+                cs, cc = cov_map[cov_choice]
+                cov_df = pd.DataFrame({'Ids': data_dict[cs]['Ids'],
+                                       se.COV: pd.to_numeric(data_dict[cs][cc], errors='coerce')})
+                model_df = build_final_df(df_to_plot, mapping_filtered, plot_metric, selected_groups, cov_df)
             p1, p2 = st.columns([1, 2])
             log_y = p1.checkbox(
                 "Log-transform", value=positive and is_variability_sheet(plot_sheet), disabled=not positive,
@@ -622,7 +840,8 @@ def analysis_tab():
 
     if any(level == 'error' for level, _ in fit_notes):
         return
-    result = cached_analysis(final_df, test, posthoc, correction, alpha, gee_family, gee_cov, plot_metric, a, log_y)
+    result = cached_analysis(model_df, test, posthoc, correction, alpha, gee_family, gee_cov, plot_metric, a, log_y,
+                             adjust_sex)
     comps = result['comparisons']
     if result['error']:
         st.error(result['error'])
@@ -638,7 +857,7 @@ def analysis_tab():
             st.caption("The graph shows raw values (mean ± SEM). Log-transform only affects the statistics: "
                        "the model was fitted on log values and differences are reported as % differences.")
         render_plot_section(final_df, comps, color_map, plot_metric, selected_tps, annotation_color,
-                            plot_width, plot_height)
+                            plot_width, plot_height, result['details'].get('trend'))
 
     with r_comp:
         if comps.empty:
@@ -651,6 +870,9 @@ def analysis_tab():
             show = format_comparisons(comps)
             st.dataframe(show.style.apply(highlight_significant, axis=1),
                          width='stretch', hide_index=True)
+            if se.CI_LO in comps and comps[se.CI_LO].notna().any():
+                st.caption("95% CI: range of plausible values for the difference (not adjusted for multiple "
+                           "comparisons). Empty for rank-based tests and Tukey / Games-Howell.")
             st.download_button("Download comparisons (CSV)", comps.to_csv(index=False).encode(),
                                file_name=f"comparisons_{plot_metric}.csv", mime="text/csv")
 
@@ -709,7 +931,8 @@ def analysis_tab():
             job_log = test == 'progression' and is_variability_sheet(plot_sheet)
             jobs = (delayed(render_single_metric_job)(
                 m, df_to_plot, mapping_filtered, selected_tps, list(selected_groups), color_map,
-                plot_width, plot_height, job_test, job_post, correction, alpha, gee_family, gee_cov, job_log)
+                plot_width, plot_height, job_test, job_post, correction, alpha, gee_family, gee_cov, job_log,
+                adjust_sex, cov_df)
                 for m in batch_metrics)
             all_stats = []
             # ponytail: 2 workers fit the Streamlit Cloud free tier (1 GB RAM); raise on bigger hosts.
@@ -737,7 +960,7 @@ with tab_stats:
 # --- TAB: RADAR ---
 with tab_radar:
     if 'mapping_df' not in st.session_state:
-        st.info("Go to **Groups & Subjects** and click **Extract variables from IDs** first.")
+        st.info("Go to **Groups & Subjects** and click **Extract variables** first.")
     else:
         mapping_df = active_mapping()
         radar_sheet = st.selectbox("Statistic (sheet)", sheet_names, key="radar_sheet")

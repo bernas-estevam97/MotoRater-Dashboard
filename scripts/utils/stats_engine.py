@@ -29,7 +29,8 @@ import statsmodels.formula.api as smf
 from statsmodels.stats.multitest import multipletests
 
 TP, GRP, SUBJ, Y = 'Timepoint Weeks', 'Group', 'Subject_ID', '_metric_'
-COHORT, SETUP = 'Cohort', 'Setup'
+COHORT, SETUP, SEX, COV = 'Cohort', 'Setup', 'Sex', '_cov_'
+CI_LO, CI_HI = '95% CI low', '95% CI high'
 
 # key -> (label, design, parametric). design: 'two' = 2 groups per timepoint,
 # 'multi' = 3+ groups per timepoint, 'long' = repeated-measures model over all timepoints.
@@ -138,7 +139,7 @@ def uses_correction(posthoc: str) -> bool:
 
 
 def _prep(df: pd.DataFrame) -> pd.DataFrame:
-    extra = [c for c in (COHORT, SETUP) if c in df.columns]
+    extra = [c for c in (COHORT, SETUP, SEX, COV) if c in df.columns]
     out = df[[SUBJ, GRP, TP, Y] + extra].dropna(subset=[SUBJ, GRP, TP, Y]).copy()
     out[Y] = out[Y].astype(float)
     out[GRP] = out[GRP].astype(str)
@@ -400,14 +401,16 @@ def _model_contrasts(res, d, groups, tps):
     rows = []
     for tp in tps:
         for ga, gb in itertools.combinations(groups, 2):
-            row = {TP: tp, 'Group A': ga, 'Group B': gb, 'Difference (B − A)': np.nan, 'SE': np.nan, 'p_unc': np.nan}
+            row = {TP: tp, 'Group A': ga, 'Group B': gb, 'Difference (B − A)': np.nan, 'SE': np.nan,
+                   CI_LO: np.nan, CI_HI: np.nan, 'p_unc': np.nan}
             a_key, b_key = (str(tp), ga), (str(tp), gb)
             if a_key in cell_row and b_key in cell_row:
                 try:
                     L = (cell_row[b_key] - cell_row[a_key]).reshape(1, -1)
                     tt = res.t_test(L)
+                    ci = np.ravel(tt.conf_int(alpha=0.05))
                     row.update({'Difference (B − A)': float(np.ravel(tt.effect)[0]),
-                                'SE': float(np.ravel(tt.sd)[0]),
+                                'SE': float(np.ravel(tt.sd)[0]), CI_LO: float(ci[0]), CI_HI: float(ci[1]),
                                 'p_unc': float(np.ravel(tt.pvalue)[0])})
                 except Exception:
                     pass
@@ -464,10 +467,10 @@ def _fit_gee(d, a, family, cov, notes):
     raise RuntimeError(f"GEE failed to fit: {err}")
 
 
-def _fit_progression(d, groups, log_y, notes):
+def _fit_progression(d, groups, log_y, notes, adjust_sex=False):
     """Mixed model with age as a continuous covariate.
 
-    Fixed: age (linear) * group + age² (shared curvature) [+ camera setup].
+    Fixed: age (linear) * group + age² (shared curvature) [+ camera setup] [+ sex] [+ covariate].
     Random: subject intercept + age slope; with 2+ cohorts also cohort and recording
     session (cohort x timepoint), so day-to-day setup differences are not read as group effects.
     Returns (comparisons, omnibus, details)."""
@@ -476,6 +479,10 @@ def _fit_progression(d, groups, log_y, notes):
         if (d[Y] <= 0).any():
             raise ValueError("log-transform needs strictly positive values")
         d[Y] = np.log(d[Y])
+    if COV in d and d[COV].isna().any():
+        n_miss = int(d[COV].isna().sum())
+        d = d[d[COV].notna()].copy()
+        notes.append(('info', f"{n_miss} session(s) without a covariate value were left out of the model."))
     lo, hi = float(d[TP].min()), float(d[TP].max())
     center, span = (lo + hi) / 2, ((hi - lo) / 2) or 1.0
     d['_t_'] = (d[TP] - center) / span          # -1..1 keeps the optimizer well scaled
@@ -489,6 +496,18 @@ def _fit_progression(d, groups, log_y, notes):
         first = d.groupby(SETUP)[TP].min().sort_values().index.astype(str).tolist()
         d['_setup_'] = pd.Categorical(d[SETUP].astype(str), categories=first)
         formula += " + C(_setup_)"
+    use_sex = adjust_sex and SEX in d and d[SEX].nunique() > 1
+    if use_sex:
+        d['_sex_'] = d[SEX].astype(str)
+        formula += " + C(_sex_)"
+    elif adjust_sex:
+        notes.append(('info', "Sex adjustment skipped: only one sex in the selected groups."))
+    use_cov = COV in d and len(d) > 0 and d[COV].std() > 0
+    if use_cov:
+        d['_covz_'] = (d[COV] - d[COV].mean()) / d[COV].std()   # per SD, keeps the optimizer scaled
+        formula += " + _covz_"
+    elif COV in d:
+        notes.append(('warning', "Covariate skipped: it is constant for this selection."))
     n_cohorts = d[COHORT].nunique() if COHORT in d else 0
     if n_cohorts >= 2:
         d['_cohort_'] = d[COHORT].astype(str)
@@ -518,18 +537,29 @@ def _fit_progression(d, groups, log_y, notes):
 
     fe, se_, pv = res.fe_params, res.bse_fe, res.pvalues
     ref = groups[0]
+    z = stats.norm.ppf(0.975)
     rows = []
     for g in groups[1:]:
         lv, sl = f"C(_group_)[T.{g}]", f"_t_:C(_group_)[T.{g}]"
         if lv not in fe:
             continue
-        rows.append({'Effect': f"Level difference at week {center:g}", 'Group A': ref, 'Group B': g,
-                     'Difference (B − A)': fe[lv], 'SE': se_[lv], 'p_unc': pv[lv]})
-        rows.append({'Effect': "Rate difference per week", 'Group A': ref, 'Group B': g,
-                     'Difference (B − A)': fe[sl] / span, 'SE': se_[sl] / span, 'p_unc': pv[sl]})
+        for effect, term, k in ((f"Level difference at week {center:g}", lv, 1.0),
+                                ("Rate difference per week", sl, span)):
+            est, se = fe[term] / k, se_[term] / k
+            rows.append({'Effect': effect, 'Group A': ref, 'Group B': g, 'Difference (B − A)': est, 'SE': se,
+                         CI_LO: est - z * se, CI_HI: est + z * se, 'p_unc': pv[term]})
     comps = pd.DataFrame(rows)
     if log_y and not comps.empty:
-        comps['% difference'] = (np.exp(comps['Difference (B − A)']) - 1) * 100
+        for col, src in (('% difference', 'Difference (B − A)'), ('% CI low', CI_LO), ('% CI high', CI_HI)):
+            comps[col] = (np.exp(comps[src]) - 1) * 100
+
+    # Population-average fitted trend per group (fixed effects only), averaged over each
+    # group's own setup / sex / covariate mix, for drawing the model on the graph.
+    fixed = np.asarray(res.model.exog) @ np.asarray(fe)
+    trend = (pd.DataFrame({GRP: d[GRP].values, TP: d[TP].values, 'Fit': fixed})
+             .groupby([GRP, TP], as_index=False)['Fit'].mean())
+    if log_y:
+        trend['Fit'] = np.exp(trend['Fit'])
 
     # Fixed-effects table, age terms rescaled back to "per week".
     def name(term):
@@ -545,6 +575,10 @@ def _fit_progression(d, groups, log_y, notes):
             return f"{term[13:-1]} vs {ref} (level at week {center:g})"
         if term.startswith('C(_setup_)[T.'):
             return f"Setup: {term[13:-1]}"
+        if term.startswith('C(_sex_)[T.'):
+            return f"Sex: {term[11:-1]}"
+        if term == '_covz_':
+            return "Covariate (per SD)"
         return term
     scale = {t: (span ** 2 if t == 'I(_t_ ** 2)' else span if '_t_' in t else 1.0) for t in fe.index}
     omni = pd.DataFrame({'Source': [name(t) for t in fe.index],
@@ -564,8 +598,9 @@ def _fit_progression(d, groups, log_y, notes):
                   + (" (acceptable: large sample, mild skew)" if ok and norm_p < 0.05 else "")
                   + ("" if ok or log_y else " — try **Log-transform** if the values are positive and skewed")
                   + "."))
-    details = {'center': center, 'log': log_y, 'n_cohorts': n_cohorts, 'setup': use_setup,
-               'random_slopes': used == 0, 'converged': bool(res.converged)}
+    details = {'center': center, 'log': log_y, 'n_cohorts': n_cohorts, 'setup': use_setup, 'sex': use_sex,
+               'covariate': use_cov, 'random_slopes': used == 0, 'converged': bool(res.converged),
+               'trend': trend}
     return comps, omni, details
 
 
@@ -585,6 +620,15 @@ def _dunn(sub, groups):
     return rows
 
 
+def _t_ci(res):
+    """95% CI of the mean difference from a scipy ttest_ind result (NaN if unavailable)."""
+    try:
+        ci = res.confidence_interval(0.95)
+        return float(ci.low), float(ci.high)
+    except Exception:
+        return np.nan, np.nan
+
+
 def _cross_sectional(d, test, posthoc, groups, tps):
     """Per-timepoint tests. Returns (omnibus_df or None, comparisons_df)."""
     omni, comps = [], []
@@ -597,12 +641,13 @@ def _cross_sectional(d, test, posthoc, groups, tps):
         if TESTS[test][1] == 'two':
             ga, gb = groups
             row = {TP: tp, 'Group A': ga, 'Group B': gb, 'Difference (B − A)': mean[gb] - mean[ga],
-                   'Statistic': np.nan, 'p_unc': np.nan}
+                   CI_LO: np.nan, CI_HI: np.nan, 'Statistic': np.nan, 'p_unc': np.nan}
             if len(valid) == 2:
                 if test == 'mwu':
                     r = stats.mannwhitneyu(by[gb], by[ga], alternative='two-sided')
                 else:
                     r = stats.ttest_ind(by[gb], by[ga], equal_var=(test == 'student_t'))
+                    row.update(dict(zip((CI_LO, CI_HI), _t_ci(r))))
                 row.update({'Statistic': float(r.statistic), 'p_unc': float(r.pvalue)})
             comps.append(row)
             continue
@@ -643,11 +688,14 @@ def _cross_sectional(d, test, posthoc, groups, tps):
                               'Statistic': z, 'p_unc': p})
         else:
             for ga, gb in itertools.combinations(valid, 2):
+                ci = (np.nan, np.nan)
                 if posthoc == 'pairwise_mwu':
                     r = stats.mannwhitneyu(by[gb], by[ga], alternative='two-sided')
                 else:
                     r = stats.ttest_ind(by[gb], by[ga], equal_var=(posthoc == 'pairwise_t'))
+                    ci = _t_ci(r)
                 comps.append({TP: tp, 'Group A': ga, 'Group B': gb, 'Difference (B − A)': mean[gb] - mean[ga],
+                              CI_LO: ci[0], CI_HI: ci[1],
                               'Statistic': float(r.statistic), 'p_unc': float(r.pvalue)})
     return (pd.DataFrame(omni) if omni else None), pd.DataFrame(comps)
 
@@ -655,7 +703,7 @@ def _cross_sectional(d, test, posthoc, groups, tps):
 def run_analysis(df: pd.DataFrame, test: str = 'auto', posthoc: str = 'auto',
                  correction: str = DEFAULT_CORRECTION, alpha: float = 0.05,
                  gee_family: str = 'auto', gee_cov: str = 'auto', metric_name: str = "the outcome",
-                 assumptions: dict = None, log_y: bool = False) -> dict:
+                 assumptions: dict = None, log_y: bool = False, adjust_sex: bool = False) -> dict:
     """Run the chosen analysis. 'auto' resolves to the recommended test / default post-hoc."""
     d = _prep(df)
     a = assumptions or check_assumptions(df, alpha)
@@ -706,7 +754,7 @@ def run_analysis(df: pd.DataFrame, test: str = 'auto', posthoc: str = 'auto',
             comps = _model_contrasts(res, d, groups, tps)
             result['details'].update({'family': fam, 'cov_struct': cov, 'cov_type': cov_type})
         elif test == 'progression':
-            comps, result['omnibus'], det = _fit_progression(d, groups, log_y, notes)
+            comps, result['omnibus'], det = _fit_progression(d, groups, log_y, notes, adjust_sex)
             result['details'].update(det)
         else:
             result['omnibus'], comps = _cross_sectional(d, test, posthoc, groups, tps)
@@ -756,7 +804,9 @@ def methods_text(result: dict, metric_name: str = "the outcome") -> str:
     elif test == 'progression':
         det = result['details']
         log = "Values were log-transformed before analysis. " if det.get('log') else ""
-        setup = " and recording setup as a covariate" if det.get('setup') else ""
+        covs = [n for n, on in (("recording setup", det.get('setup')), ("sex", det.get('sex')),
+                                ("a user-selected covariate (standardised)", det.get('covariate'))) if on]
+        setup = f" and {', '.join(covs)} as covariate{'s' if len(covs) > 1 else ''}" if covs else ""
         slope = "random intercepts and age slopes per subject" if det.get('random_slopes') else \
             "random intercepts per subject"
         rand = (f"{slope}, plus random intercepts for cohort and recording session (cohort × timepoint)"
@@ -777,6 +827,9 @@ def methods_text(result: dict, metric_name: str = "the outcome") -> str:
     if uses_correction(posthoc) and _n_comparisons(test, a) > 1:
         parts.append(f"P-values were adjusted for multiple comparisons with the {result['correction']} method."
                      if corr else "P-values were not adjusted for multiple comparisons.")
+    comps = result.get('comparisons')
+    if comps is not None and CI_LO in comps and comps[CI_LO].notna().any():
+        parts.append("Differences are reported with 95% confidence intervals (not adjusted for multiple comparisons).")
     parts.append(f"Statistical significance was set at α = {result['alpha']}.")
     return " ".join(parts)
 
@@ -851,5 +904,22 @@ if __name__ == "__main__":
     lg = run_analysis(prog, 'progression', log_y=True)
     assert lg['error'] is None and '% difference' in lg['comparisons'] and 'log-transformed' in lg['methods']
     assert 'progression' not in available_tests(2, 2)
+    # CIs bracket the estimate; fitted trend covers every group x timepoint.
+    rc = r['comparisons']
+    assert ((rc[CI_LO] < rc['Difference (B − A)']) & (rc['Difference (B − A)'] < rc[CI_HI])).all()
+    assert len(r['details']['trend']) == prog.groupby([GRP, TP]).ngroups
+    assert '% CI low' in lg['comparisons'] and (lg['details']['trend']['Fit'] > 0).all()
+    # Sex shifts everyone by +3 and speed covariate adds 2/SD: both recovered, rate effect unchanged.
+    sx = prog.assign(**{SEX: np.where(prog[SUBJ].str[1:].astype(int) % 2 == 0, 'F', 'M')})
+    sx[COV] = rng.normal(size=len(sx))
+    sx[Y] = sx[Y] + 3 * (sx[SEX] == 'M') + 2 * sx[COV]
+    rs = run_analysis(sx, 'progression', adjust_sex=True)
+    om = rs['omnibus'].set_index('Source')
+    assert rs['details']['sex'] and rs['details']['covariate'], rs['details']
+    assert abs(om.loc['Sex: M', 'Estimate'] - 3) < 0.6 and om.loc['Covariate (per SD)', 'p'] < 0.001
+    assert 'sex' in rs['methods'] and '95% confidence' in rs['methods']
+    # Cross-sectional t-test and model contrasts report CIs too.
+    assert run_analysis(two[two[TP] == 4], 'welch_t')['comparisons'][CI_LO].notna().all()
+    assert run_analysis(df, 'lmm')['comparisons'][CI_HI].notna().all()
     assert p_to_stars(0.00001) == "****" and p_to_stars(0.2) == "ns"
     print("stats_engine self-check passed")
