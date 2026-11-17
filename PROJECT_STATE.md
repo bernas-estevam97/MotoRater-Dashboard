@@ -162,6 +162,25 @@ MotoRater-Dashboard/
     then blocked (nothing ran). It now recommends the matching per-timepoint test and says why.
   - Both cases are covered by the `stats_engine.py` self-check; `stat_info.py` text updated.
 
+### L. Progression Model & Cohort Handling (`prod_pro` + `pro-cloud`, 2026-11-17)
+Motivation: on the SCA2 footprint data, per-timepoint tests found almost nothing, while a continuous-age model found a
+progressive TG decline (Protraction/Retraction, Knee Angle) and higher TG pelvic variability (SD/CV of hip, iliac
+crest, tail base height). Cohorts started at different times and the camera setup changed (week 44 for cohorts 1–5,
+week 16 for cohort 6), which shifted height measurements by recording day.
+- **`progression` test** (`stats_engine._fit_progression`): `y ~ age * group + age²` [+ setup], age centred and scaled
+  internally, results reported per week. Random subject intercept + age slope; with 2+ cohorts, cohort is the grouping
+  factor with variance components for subject, subject slope and session (cohort × timepoint). Falls back to random
+  intercepts if slopes fail. Reports *Level difference at week c* and *Rate difference per week* vs the reference
+  group; optional log-transform adds `% difference`.
+- **Cohort table** (Groups & Subjects, optional): Cohort | Animal IDs | New setup from week → `Cohort` / `Setup` columns
+  via `apply_cohorts()`; ignored by all other tests.
+- **L/R averages** (sidebar): `(L/R mean)` columns for every Left/Right pair (`add_lr_means`).
+- **Log-transform** checkbox for the progression model, default on for SD/CV sheets (`is_variability_sheet`).
+- **CV warning** when a CV-sheet measurement has negative values (signed components, toe clearance).
+- **Batch export**: measurement multiselect (primary outcomes) and `p_corr_all_measurements` column.
+- **Fix**: uploading a corrected file with the same name now resets the session (keyed on content hash, not name).
+- Display: tables show 4 significant digits instead of 4 decimals (small per-week effects were shown as 0.0000).
+
 ---
 
 ## 4. Updates & Change Log
@@ -190,3 +209,7 @@ MotoRater-Dashboard/
   error in RM ANOVA / LMM / GEE, polars 2.0 crash on the kinematics page, GEE autoregressive failures); polars removed;
   `requirements.txt` given tested version ranges and trimmed to packages the app imports. GEE uses bias-reduced
   standard errors below 40 subjects; Auto avoids repeated-measures models when a group has < 3 subjects. See section K.
+* **[2026-11-17]** (`pro-cloud`): ported from `prod_pro`: progression model (continuous age, level + rate
+  contrasts), optional cohort / camera setup table, L/R averages, log-transform for SD/CV, CV sign warning,
+  primary outcomes in batch export, same-name re-upload fix. See section L. `docs/Info Statistical Analysis.docx/.pdf`
+  updated (new section 6).

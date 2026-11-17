@@ -1,3 +1,4 @@
+import hashlib
 import io
 import os
 import re
@@ -81,12 +82,35 @@ def convert_units(_raw: dict, filename: str, unit: str) -> dict:
     return out
 
 
+@st.cache_data(show_spinner=False)
+def add_lr_means(_data: dict, key: str, enabled: bool) -> dict:
+    """Add '(L/R mean)' columns averaging every Left/Right measurement pair (cached per file + unit)."""
+    if not enabled:
+        return _data
+    out = {}
+    for sheet, df in _data.items():
+        new = {}
+        for col in df.columns:
+            other = col.replace('Left', 'Right') if isinstance(col, str) else None
+            if other and other != col and other in df.columns:
+                name = col.replace('(Left)', '(L/R mean)') if '(Left)' in col else col.replace('Left', 'L/R mean')
+                new[name] = (pd.to_numeric(df[col], errors='coerce') + pd.to_numeric(df[other], errors='coerce')) / 2
+        out[sheet] = df.assign(**new) if new else df
+    return out
+
+
+def is_variability_sheet(name: str) -> bool:
+    """Sheets holding SD / CV / variance values (skewed and positive: log-transform by default)."""
+    return bool(re.search(r'\b(std|sd|cv|var|variance)\b', str(name), re.IGNORECASE))
+
+
 def build_final_df(df_sheet, mapping, metric, group_order):
     """Join measurements to the ID mapping and average trials per subject x timepoint."""
     # Plain pandas: pl.from_pandas segfaulted under Streamlit with polars 2.0 + pandas 3.
     out = pd.merge(df_sheet[['Ids', metric]].astype({'Ids': str}), mapping.astype({'Ids': str}), on='Ids')
     out[metric] = pd.to_numeric(out[metric], errors='coerce')
-    out = out.dropna(subset=[metric]).groupby(['Subject_ID', 'Group', TP], as_index=False)[metric].mean()
+    keys = ['Subject_ID', 'Group', TP] + [c for c in (se.COHORT, se.SETUP) if c in mapping.columns]
+    out = out.dropna(subset=[metric]).groupby(keys, as_index=False)[metric].mean()
     out['_metric_'] = out[metric].astype(float)
     out['Group'] = pd.Categorical(out['Group'], categories=group_order)
     return out.sort_values([TP, 'Group'])
@@ -98,12 +122,33 @@ def cached_assumptions(final_df, alpha):
 
 
 @st.cache_data(show_spinner="Running statistics...")
-def cached_analysis(final_df, test, posthoc, correction, alpha, gee_family, gee_cov, metric, _assumptions):
-    return se.run_analysis(final_df, test, posthoc, correction, alpha, gee_family, gee_cov, metric, _assumptions)
+def cached_analysis(final_df, test, posthoc, correction, alpha, gee_family, gee_cov, metric, _assumptions, log_y):
+    return se.run_analysis(final_df, test, posthoc, correction, alpha, gee_family, gee_cov, metric, _assumptions,
+                           log_y)
+
+
+def apply_cohorts(mapping, table):
+    """Add 'Cohort' and 'Setup' columns from the optional cohort table. An animal ID matches a
+    Subject_ID equal to it or starting with it plus '_' (so '2273' covers '2273_1L', '2273_2R')."""
+    if table is None or table.dropna(how='all').empty:
+        return mapping
+    out = mapping.copy()
+    out[se.COHORT], out[se.SETUP] = 'Unassigned', 'Original'
+    subj = out['Subject_ID'].astype(str)
+    for _, row in table.dropna(how='all').iterrows():
+        ids = [s.strip() for s in re.split(r'[,;\s]+', str(row.get('Animal IDs') or '')) if s.strip()]
+        if not ids or pd.isna(row.get('Cohort')) or not str(row['Cohort']).strip():
+            continue
+        hit = subj.apply(lambda s: any(s == i or s.startswith(i + '_') for i in ids))
+        out.loc[hit, se.COHORT] = str(row['Cohort']).strip()
+        week = pd.to_numeric(row.get('New setup from week'), errors='coerce')
+        if pd.notna(week):
+            out.loc[hit & (out[TP] >= week), se.SETUP] = 'New'
+    return out
 
 
 def active_mapping():
-    mapping = st.session_state.mapping_df
+    mapping = apply_cohorts(st.session_state.mapping_df, st.session_state.get('cohort_table'))
     excluded = st.session_state.get('exclude_subjects_ui')
     return mapping[~mapping['Subject_ID'].isin(excluded)] if excluded else mapping
 
@@ -166,7 +211,7 @@ def render_plot_section(final_df, comparisons, color_map, plot_metric, timepoint
         xaxis['range'] = [x_min, x_max]
     fig.update_layout(xaxis=xaxis)
 
-    if show_stars and two_groups and not comparisons.empty:
+    if show_stars and two_groups and not comparisons.empty and TP in comparisons.columns:
         y_max, y_min = plot_df[plot_metric].max(), plot_df[plot_metric].min()
         offset = (y_max - y_min) * 0.08 if y_max != y_min else abs(y_max) * 0.05
         top = y_max
@@ -191,20 +236,19 @@ def render_plot_section(final_df, comparisons, color_map, plot_metric, timepoint
 
 
 def render_single_metric_job(metric, df_sheet, mapping, timepoints, group_order, color_map,
-                             plot_width, plot_height, test, posthoc, correction, alpha, gee_family, gee_cov):
+                             plot_width, plot_height, test, posthoc, correction, alpha, gee_family, gee_cov,
+                             log_y=False):
     """Headless Matplotlib PNG renderer + statistics for one measurement (runs in a worker process)."""
-    loop = pd.merge(df_sheet[['Ids', metric]].astype({'Ids': str}), mapping.astype({'Ids': str}), on='Ids')
-    loop[metric] = pd.to_numeric(loop[metric], errors='coerce')
-    loop = loop.dropna(subset=[metric]).groupby(['Subject_ID', 'Group', TP], as_index=False)[metric].mean()
+    loop = build_final_df(df_sheet, mapping, metric, group_order)
     if loop.empty or loop['Group'].nunique() < 2:
         return None, None, None
-    loop['_metric_'] = loop[metric].astype(float)
-    loop['Group'] = pd.Categorical(loop['Group'], categories=group_order)
+    # Log needs positive values; a metric that crosses zero is analysed on the raw scale.
+    log_y = log_y and bool((loop['_metric_'] > 0).all())
 
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            res = se.run_analysis(loop, test, posthoc, correction, alpha, gee_family, gee_cov, metric)
+            res = se.run_analysis(loop, test, posthoc, correction, alpha, gee_family, gee_cov, metric, log_y=log_y)
         comps = res['comparisons'] if res['error'] is None else pd.DataFrame()
         stats_rows = comps.assign(Measurement=metric, Test=se.label(res['test'])) if not comps.empty else None
     except Exception:
@@ -227,7 +271,7 @@ def render_single_metric_job(metric, df_sheet, mapping, timepoints, group_order,
     ax.spines[['top', 'right']].set_visible(False)
     ax.legend(frameon=False)
 
-    if len(group_order) == 2 and not comps.empty:
+    if len(group_order) == 2 and not comps.empty and TP in comps.columns:
         y_max, y_min = loop[metric].max(), loop[metric].min()
         offset = (y_max - y_min) * 0.08 if y_max != y_min else abs(y_max) * 0.05
         top = y_max
@@ -255,7 +299,8 @@ def tidy(df):
     if TP in show.columns:
         show[TP] = show[TP].map(lambda v: f"{v:g}")
     num = show.select_dtypes('float').columns
-    show[num] = show[num].round(4)
+    # 4 significant digits: fixed rounding showed small effects (metres, per-week rates) as 0.0000.
+    show[num] = show[num].apply(lambda col: col.map(lambda v: float(f"{v:.4g}") if pd.notna(v) else v))
     return show
 
 
@@ -286,9 +331,11 @@ if not uploaded_file:
     st.stop()
 
 file_bytes = uploaded_file.getvalue()
-if st.session_state.get('uploaded_filename') != uploaded_file.name:
+# Key on content, not name: re-uploading a corrected file with the same name must reset everything.
+file_key = f"{uploaded_file.name}:{hashlib.md5(file_bytes).hexdigest()}"
+if st.session_state.get('uploaded_filename') != file_key:
     st.session_state.data_dict = load_data(file_bytes, uploaded_file.name)
-    st.session_state.uploaded_filename = uploaded_file.name
+    st.session_state.uploaded_filename = file_key
     for key in ('mapping_df', 'group_definitions_final', 'exclude_subjects_ui'):
         st.session_state.pop(key, None)
 
@@ -301,10 +348,13 @@ if not sheet_names:
 # --- Sidebar (grouped so it stays short) ---
 with st.sidebar:
     st.header("Display settings")
-    with st.expander("📏 Units", expanded=False):
+    with st.expander("📏 Units & measurements", expanded=False):
         distance_unit = st.radio("Distance units", ["Meters (m)", "Millimeters (mm)"],
                                  help="Converts distance, velocity and acceleration. "
                                       "Statistical significance is unaffected.")
+        lr_means = st.checkbox("Add left/right averages", value=False, key="lr_means",
+                               help="Adds an '(L/R mean)' measurement for every Left/Right pair. Fewer "
+                                    "measurements means less multiple-testing penalty.")
     color_map = {}
     if 'mapping_df' in st.session_state:
         with st.expander("🎨 Group colors", expanded=False):
@@ -319,7 +369,8 @@ with st.sidebar:
                                help="Applies to on-screen plots and exported PNGs.")
         plot_height = st.slider("Plot height (px)", 400, 1600, 600, 50)
 
-data_dict = convert_units(raw_data_dict, uploaded_file.name, distance_unit)
+data_dict = add_lr_means(convert_units(raw_data_dict, file_key, distance_unit),
+                         f"{file_key}:{distance_unit}", lr_means)
 
 tab_data, tab_groups, tab_stats, tab_radar = st.tabs([
     "📂 Data", "🧪 Groups & Subjects", "🧮 Statistical Analysis", "🕸️ Radar Profile"])
@@ -396,6 +447,33 @@ with tab_groups:
         st.multiselect("Subjects removed from every plot and statistic (e.g., outliers, dropouts):",
                        options=sorted(mapping_all['Subject_ID'].dropna().unique()), key="exclude_subjects_ui")
 
+        with st.expander("Cohorts & recording setup (optional)", expanded=False):
+            st.markdown("Fill this in when animals started the experiment at different times or the camera setup "
+                        "changed. Only the **Progression model** uses it: recording sessions (cohort × week) and "
+                        "the setup change are then accounted for, so day-to-day recording differences are not "
+                        "mistaken for group effects. Leave empty to ignore.")
+            if 'cohort_definitions' not in st.session_state:
+                st.session_state.cohort_definitions = pd.DataFrame(
+                    {"Cohort": pd.Series(dtype=str), "Animal IDs": pd.Series(dtype=str),
+                     "New setup from week": pd.Series(dtype=float)})
+            st.session_state.cohort_table = st.data_editor(
+                st.session_state.cohort_definitions, num_rows="dynamic", width='stretch', hide_index=True,
+                key="cohort_editor",
+                column_config={
+                    "Animal IDs": st.column_config.TextColumn(
+                        help="Comma-separated. '2273' matches 2273, 2273_1L, 2273_2R..."),
+                    "New setup from week": st.column_config.NumberColumn(
+                        help="First week recorded with the new camera setup (leave empty if unchanged)."),
+                })
+            assigned = apply_cohorts(mapping_all, st.session_state.cohort_table)
+            if se.COHORT in assigned.columns:
+                per = assigned.drop_duplicates('Subject_ID').groupby(se.COHORT)['Subject_ID'].nunique()
+                st.caption(" · ".join(f"{c}: {n} subjects" for c, n in per.items()))
+                missing = sorted(assigned.loc[assigned[se.COHORT] == 'Unassigned', 'Subject_ID'].unique())
+                if missing:
+                    st.warning(f"{len(missing)} subject(s) match no cohort and form an 'Unassigned' cohort: "
+                               + ", ".join(map(str, missing[:15])) + ("..." if len(missing) > 15 else ""))
+
         clean = active_mapping()
         counts = (clean[clean['Group'] != 'Unknown'].groupby('Group')
                   .agg(**{'Subjects (N)': ('Subject_ID', 'nunique'), 'Timepoints': (TP, 'nunique'),
@@ -458,6 +536,14 @@ def analysis_tab():
         st.error("No numeric data for this measurement in at least two of the selected groups.")
         return
 
+    if is_variability_sheet(plot_sheet) and (final_df['_metric_'] < 0).any():
+        st.warning(f"**{plot_metric}** has negative values in **{plot_sheet}**: the underlying measurement crosses "
+                   "zero (e.g. signed velocity/acceleration components, toe clearance), so a coefficient of "
+                   "variation is not meaningful. Use the SD sheet for this measurement instead.")
+    if 'L/R mean' in plot_metric:
+        st.caption("Left and right were averaged per trial. If the two sides are filmed by different cameras or "
+                   "were affected differently by a setup change, also check each side separately.")
+
     alpha_default = st.session_state.get('stat_alpha', 0.05)
     a = cached_assumptions(final_df, alpha_default)
 
@@ -506,6 +592,24 @@ def analysis_tab():
                 gee_cov = e2.selectbox("Working correlation", se.GEE_COVS, key="gee_cov",
                                        format_func=str.title)
 
+        log_y = False
+        if test == 'progression':
+            positive = bool((final_df['_metric_'] > 0).all())
+            p1, p2 = st.columns([1, 2])
+            log_y = p1.checkbox(
+                "Log-transform", value=positive and is_variability_sheet(plot_sheet), disabled=not positive,
+                key=f"log_y_{plot_sheet}",
+                help="Recommended for SD / CV sheets (skewed, positive). Differences are then reported as % "
+                     "differences. Not available when values are zero or negative.") and positive
+            if se.COHORT in final_df.columns:
+                n_coh = final_df[se.COHORT].nunique()
+                setup = final_df[se.SETUP].nunique() > 1
+                p2.caption(f"Using {n_coh} cohort(s)" + (" with recording sessions" if n_coh >= 2 else "")
+                           + (" and the camera setup change" if setup else "") + ".")
+            else:
+                p2.caption("No cohort information — add it under **Groups & Subjects → Cohorts & recording setup** "
+                           "if animals started at different times or the setup changed.")
+
         st.caption(f"★ Recommended for this measurement: **{se.label(rec_test)}** — {rec_reason}.")
         fit_notes = se.assess_fit(test, posthoc, correction, a)
         problems = [n for n in fit_notes if n[0] in ('error', 'warning')]
@@ -518,7 +622,7 @@ def analysis_tab():
 
     if any(level == 'error' for level, _ in fit_notes):
         return
-    result = cached_analysis(final_df, test, posthoc, correction, alpha, gee_family, gee_cov, plot_metric, a)
+    result = cached_analysis(final_df, test, posthoc, correction, alpha, gee_family, gee_cov, plot_metric, a, log_y)
     comps = result['comparisons']
     if result['error']:
         st.error(result['error'])
@@ -530,6 +634,9 @@ def analysis_tab():
         ["📈 Graph", "🔬 Multiple comparisons", "📋 Omnibus / model", "✅ Assumptions", "📝 Methods text"])
 
     with r_plot:
+        if result['details'].get('log'):
+            st.caption("The graph shows raw values (mean ± SEM). Log-transform only affects the statistics: "
+                       "the model was fitted on log values and differences are reported as % differences.")
         render_plot_section(final_df, comps, color_map, plot_metric, selected_tps, annotation_color,
                             plot_width, plot_height)
 
@@ -586,17 +693,24 @@ def analysis_tab():
         st.write(f"Renders a 300-dpi PNG per measurement in **{plot_sheet}** and a CSV with every comparison, "
                  f"using the current setup (**{'Auto' if test_choice == 'auto' else se.label(test)}**, "
                  f"{result['correction']}).")
-        if st.button("Generate ZIP", type="primary", key="batch_export_btn"):
+        batch_metrics = st.multiselect(
+            "Measurements (pick your primary outcomes)", numeric_cols, default=numeric_cols,
+            key=f"batch_metrics_{plot_sheet}_{lr_means}",  # options change with sheet / L-R toggle
+            help="The CSV adds 'p_corr_all_measurements': p-values adjusted with the chosen correction across "
+                 "every comparison of every selected measurement. Fewer, pre-chosen outcomes = more power.")
+        if st.button("Generate ZIP", type="primary", key="batch_export_btn", disabled=not batch_metrics):
             progress = st.progress(0.0)
             status = st.empty()
             zip_buffer = io.BytesIO()
-            total = len(numeric_cols)
+            total = len(batch_metrics)
             job_test = 'auto' if test_choice == 'auto' else test
             job_post = 'auto' if test_choice == 'auto' else posthoc
+            # Log setting follows the sheet type (per-metric checkbox only covers the metric on screen).
+            job_log = test == 'progression' and is_variability_sheet(plot_sheet)
             jobs = (delayed(render_single_metric_job)(
                 m, df_to_plot, mapping_filtered, selected_tps, list(selected_groups), color_map,
-                plot_width, plot_height, job_test, job_post, correction, alpha, gee_family, gee_cov)
-                for m in numeric_cols)
+                plot_width, plot_height, job_test, job_post, correction, alpha, gee_family, gee_cov, job_log)
+                for m in batch_metrics)
             all_stats = []
             # ponytail: 2 workers fit the Streamlit Cloud free tier (1 GB RAM); raise on bigger hosts.
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -609,7 +723,9 @@ def analysis_tab():
                     progress.progress((i + 1) / total)
                     status.text(f"Rendered {i + 1} / {total}")
                 if all_stats:
-                    zf.writestr("statistics_summary.csv", pd.concat(all_stats).to_csv(index=False))
+                    summary = pd.concat(all_stats, ignore_index=True)
+                    summary['p_corr_all_measurements'] = se._adjust(summary['p_unc'], se.CORRECTIONS.get(correction))
+                    zf.writestr("statistics_summary.csv", summary.to_csv(index=False))
             status.success("Export ready.")
             st.download_button("📥 Download ZIP", zip_buffer.getvalue(),
                                file_name=f"Kinematics_{plot_sheet}.zip", mime="application/zip")
