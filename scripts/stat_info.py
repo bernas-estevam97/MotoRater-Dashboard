@@ -67,7 +67,11 @@ random intercept and age slope per subject. It reports two contrasts per group: 
 week and the **difference in rate of change per week**. One rate test replaces many per-timepoint tests, so slowly
 progressing phenotypes are detected with much more power. With the optional cohort table it adds random effects for
 cohort and recording session (cohort × week) and a fixed effect for a camera-setup change. A log-transform option
-(default for SD/CV sheets) reports results as % differences.
+(default for SD/CV sheets) reports results as % differences. Optional fixed-effect covariates: **sex** (lets both
+sexes be pooled in one group) and one **numeric covariate** such as walking speed (standardised, reported per SD).
+
+**95% confidence intervals** are reported for model-based contrasts and the progression model (Wald, z-based) and for
+t-tests (t-based). They are not adjusted for multiple comparisons; rank-based tests and Tukey / Games-Howell have none.
 
 **Model-based contrasts** compare each pair of groups at each timepoint using the fitted model's covariance (the pooled
 repeated-measures error term, as Prism does), rather than treating timepoints as independent samples. Omnibus effects

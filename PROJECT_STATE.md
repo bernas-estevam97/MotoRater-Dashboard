@@ -183,6 +183,26 @@ week 16 for cohort 6), which shifted height measurements by recording day.
 - **Fix**: uploading a corrected file with the same name now resets the session (keyed on content hash, not name).
 - Display: tables show 4 significant digits instead of 4 decimals (small per-week effects were shown as 0.0000).
 
+### L. Metadata Extraction, Covariates & Data-Quality Checks (`prod_pro`, 2026-11-17)
+From a full-app review against the SCA2 footprint data (L/R height correlation 0.07, 10° knee-angle side offset,
+broken left hindpaw toe clearance, ~6% half-length Step Length sessions, run duration 0.8–8 s).
+- **A** `Protraction/Retraction` relabelled `(m)`: it is the Euclidean hind toe → PSIS distance, not an angle
+  (now also converted by the m→mm switch).
+- **B** `(L/R mean)` measurements warn when the two sides disagree (r < 0.5 or means > 20% apart): `lr_disagreement()`.
+- **C** 95% CIs (`se.CI_LO/CI_HI`) for model contrasts (`t_test().conf_int`), progression (Wald z) and t-tests
+  (`ttest_ind().confidence_interval`); `% CI` columns under log-transform; methods text mentions them.
+- **D** Progression covariate: any numeric column of any sheet (`se.COV`, z-scored, "per SD"); sessions without a value
+  are dropped with a note.
+- **E** `Adjust for sex` (`se.SEX`): from a metadata column or an `M`/`F` token in the ID.
+- **F** Single-session exclusion (`exclude_sessions_ui`, label "animal @ week") and an outlier panel: robust z > 5 vs
+  group × week median + the animal's own offset (follows growth), with a button that adds them to the exclusion list.
+- **G** Metadata mode: pick subject / timepoint / group(s) / sex columns + weeks-per-timepoint factor. Every sheet
+  gets an `Ids` = `subject|timepoint` row key (`with_row_keys`), so the rest of the page is unchanged. Rows with an
+  animal in two groups are listed (labelling errors). `metric_columns` now skips metadata / non-numeric columns.
+- **H** Fitted population-average trend (`details['trend']`, fixed effects only) drawn dashed on screen and in PNGs.
+- **I** ID mode matches tags as whole `_`-separated tokens (`TG` no longer matches inside `ATG1`).
+- **J** Optional log-scale Y axis.
+
 ---
 
 ## 4. Updates & Change Log
@@ -213,3 +233,6 @@ week 16 for cohort 6), which shifted height measurements by recording day.
   setup table, L/R averages, log-transform for SD/CV, CV sign warning, primary outcomes in batch export, same-name
   re-upload fix. See section K. `docs/Info Statistical Analysis.docx/.pdf` updated (new section 6) and copied to
   `pro-cloud`.
+* **[2026-11-17]** (`prod_pro`): metadata-column extraction, sex / numeric covariates, 95% CIs, session exclusion and
+  outlier panel, L/R agreement warning, fitted trend lines, log Y axis, token tag matching, Protraction/Retraction
+  unit fix. See section L. Not yet ported to `pro-cloud`; Word/PDF guide not yet updated for these.

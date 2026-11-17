@@ -14,14 +14,22 @@ st.markdown("""
         ---
         
         ## 📋 1. Prerequisites: Data Formatting
-        For the app to process your data automatically, your file must follow a few specific rules:
-        
-        1. **Supported File Types**: You can upload Excel (`.xlsx`), HDF5 (`.h5`), single Parquet (`.parquet`), or a ZIP archive containing multiple Parquet files.
-        2. **The "Ids" Column**: **This is mandatory.** At least one of the columns in your dataset must be named exactly `Ids`.
-        3. **ID Naming Convention**: The app uses your `Ids` to automatically figure out the subject, their group, and the timepoint. Your IDs should ideally look something like this:
-            * `SubjectNumber_GroupTag_Timepoint`
-            * *Example*: `Mouse123_WT_M_10W` or `Subject45_TG_T2`
-            * **Important**: The app specifically looks for numbers followed by "W/w" (Weeks) or "T/t" (Timepoints) to extract the time (e.g., `10W` becomes `10`). It takes everything before the first recognized time/group tag as the unique Subject ID.
+        **Supported file types**: Excel (`.xlsx`), HDF5 (`.h5`), single Parquet (`.parquet`), or a ZIP of Parquet
+        files. Each sheet holds one summary statistic (Mean, Median, Std, CV, …) with one row per trial or session.
+        The app reads groups and timepoints in one of two ways:
+
+        **A. Metadata columns (recommended).** The file has columns such as `Ids` (animal), `Experimental Group`,
+        `Gender`, `Timepoint`, followed by the measurements. You pick the columns in the app; several group columns
+        are combined (e.g. `WT F`). If the timepoint column is an index (1, 2, 3 …) set *Weeks per timepoint unit*
+        (e.g. 4 if 1 = week 4). Extra columns such as body weight or recording date are simply ignored, or can be
+        used as a covariate if numeric.
+
+        **B. Tags inside the trial ID.** A column named exactly `Ids` with IDs like `2199_1R_44W_FOOTPRINT_WT_F`:
+
+        * Timepoint: a number followed by `W` (weeks) or preceded by `T` (e.g. `44W`, `T2`).
+        * Subject: everything before the timepoint (`2199_1R`).
+        * Group: each *Tag in ID* is matched as a whole part between `_` separators (`TG` matches `…_TG_F`,
+          not `ATG1`). Sex is read from an `M` / `F` part when present.
         
         ---
         
@@ -39,9 +47,12 @@ st.markdown("""
         * Switch sheets with the dropdown. Expand **Trial IDs found** to scroll through every ID.
 
         ### Step 3: Define your groups (🧪 Groups & Subjects tab — ⚠️ required)
-        1. Edit the table: *Group Name* is shown on plots, *Tag in ID* is the text searched for in each ID (e.g. "WT_M").
-        2. Click **Extract variables from IDs**.
-        3. Optionally **exclude subjects** (outliers, dropouts) from every plot and statistic.
+        1. Choose **Extract variables from**: *Metadata columns* (pick animal, timepoint, group and optional sex
+           columns) or *Trial IDs* (edit the tag table: *Group Name* is shown on plots, *Tag in ID* is matched in each ID).
+        2. Click **Extract variables**. In metadata mode, animals labelled with different groups in different rows
+           are listed in red — usually a typo in the file.
+        3. Optionally exclude **whole animals** (dropouts) or **single sessions** (animal @ week, e.g. a failed
+           recording) from every plot and statistic.
         4. Optionally fill **Cohorts & recording setup**: one row per cohort with its animal IDs (comma-separated;
            `2273` matches `2273_1L`, `2273_2R`, ...) and, if the camera setup changed, the first week recorded with the
            new setup. Use it when animals started at different times. Only the **Progression model** uses it.
@@ -72,6 +83,19 @@ st.markdown("""
         (per week), treating age as continuous instead of comparing every timepoint separately. A slowly
         progressing phenotype is usually only detectable this way.
         * With cohort information it also absorbs recording-day (cohort × week) and camera-setup differences.
+        * **Adjust for sex** pools both sexes (e.g. WT vs TG) while correcting for sex differences — more animals per
+          group than splitting into WT Male / WT Female / ….
+        * **Covariate** (optional): any numeric column from any sheet, e.g. walking speed or *Time Duration*.
+          Avoid covariates that the disease itself changes, or part of the real effect is removed.
+        * The graph shows the model's fitted trend per group as dashed lines (*Show fitted progression trend*).
+
+        ### Data quality helpers
+        * **95% confidence intervals** are shown for every difference where they can be computed.
+        * **Possible outlier sessions**: for each measurement, sessions more than 5 robust SDs away from what is
+          expected for that animal at that week are listed, with a button to exclude them.
+        * **Left/right check**: an `(L/R mean)` measurement whose two sides disagree (r < 0.5 or means > 20% apart)
+          shows a warning — the sides probably do not measure the same thing.
+        * **Log-scale Y axis** (Graph → Axis settings): equal % differences look equally large.
         * **Log-transform** is on by default for SD / CV sheets (skewed values); results are then % differences.
         * On a CV sheet, measurements with negative values (signed velocity/acceleration, toe clearance) trigger a
           warning: their CV is not meaningful — use the SD sheet.
