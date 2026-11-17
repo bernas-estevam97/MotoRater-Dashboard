@@ -13,7 +13,8 @@ Workflow (mirrors GraphPad Prism):
     5. run_analysis(df, ...)            -> omnibus table, multiple comparisons, methods text
 
 Input frame columns: 'Subject_ID', 'Group', 'Timepoint Weeks', '_metric_'
-(one row per subject x timepoint, trials already averaged).
+(one row per subject x timepoint, trials already averaged). Optional 'Cohort' and
+'Setup' columns are used by the progression model only.
 """
 
 import itertools
@@ -28,6 +29,7 @@ import statsmodels.formula.api as smf
 from statsmodels.stats.multitest import multipletests
 
 TP, GRP, SUBJ, Y = 'Timepoint Weeks', 'Group', 'Subject_ID', '_metric_'
+COHORT, SETUP = 'Cohort', 'Setup'
 
 # key -> (label, design, parametric). design: 'two' = 2 groups per timepoint,
 # 'multi' = 3+ groups per timepoint, 'long' = repeated-measures model over all timepoints.
@@ -41,10 +43,12 @@ TESTS = {
     'mixed_anova': ("Two-way repeated-measures ANOVA (mixed design)", 'long', True),
     'lmm': ("Mixed-effects model (REML)", 'long', True),
     'gee': ("Generalized estimating equations (GEE)", 'long', False),
+    'progression': ("Progression model (continuous age, mixed-effects)", 'long', True),
 }
 
 POSTHOCS = {
     'model': "Model-based group contrasts at each timepoint",
+    'trend': "Level and rate-of-change contrasts vs the reference group",
     'direct': "Direct two-group comparison",
     'tukey': "Tukey's HSD",
     'games_howell': "Games-Howell",
@@ -75,7 +79,7 @@ GEE_FAMILIES = ['auto', 'gaussian', 'gamma', 'poisson']
 GEE_COVS = ['auto', 'autoregressive', 'exchangeable', 'independence']
 
 _NONPARAM_ALT = {'welch_t': 'mwu', 'student_t': 'mwu', 'anova1': 'kruskal', 'welch_anova': 'kruskal',
-                 'mixed_anova': 'gee', 'lmm': 'gee'}
+                 'mixed_anova': 'gee', 'lmm': 'gee', 'progression': 'gee'}
 _PARAM_ALT = {'mwu': 'welch_t', 'kruskal': 'anova1'}
 
 
@@ -111,11 +115,14 @@ def available_tests(n_groups: int, n_timepoints: int) -> list:
     """Tests valid for the current design, in display order."""
     cross = ['welch_t', 'student_t', 'mwu'] if n_groups == 2 else ['anova1', 'welch_anova', 'kruskal']
     if n_timepoints > 1:
-        return ['mixed_anova', 'lmm', 'gee'] + cross
+        # A curved age trend (linear + quadratic) needs at least 3 timepoints.
+        return ['mixed_anova', 'lmm', 'gee'] + (['progression'] if n_timepoints >= 3 else []) + cross
     return cross
 
 
 def available_posthocs(test: str) -> list:
+    if test == 'progression':
+        return ['trend']
     design = TESTS[test][1]
     if design == 'long':
         return ['model']
@@ -131,7 +138,8 @@ def uses_correction(posthoc: str) -> bool:
 
 
 def _prep(df: pd.DataFrame) -> pd.DataFrame:
-    out = df[[SUBJ, GRP, TP, Y]].dropna().copy()
+    extra = [c for c in (COHORT, SETUP) if c in df.columns]
+    out = df[[SUBJ, GRP, TP, Y] + extra].dropna(subset=[SUBJ, GRP, TP, Y]).copy()
     out[Y] = out[Y].astype(float)
     out[GRP] = out[GRP].astype(str)
     out['_time_'] = out[TP].astype(str)
@@ -149,9 +157,10 @@ def _adjust(pvals, method):
     return out
 
 
-def _fit_mixedlm(df, formula):
-    """Fit a random-intercept LMM, trying several optimizers (lbfgs alone is often singular)."""
-    model = smf.mixedlm(formula, df, groups=SUBJ)
+def _fit_mixedlm(df, formula, groups=SUBJ, re_formula=None, vc_formula=None):
+    """Fit an LMM (random intercept per subject by default), trying several optimizers
+    (lbfgs alone is often singular)."""
+    model = smf.mixedlm(formula, df, groups=groups, re_formula=re_formula, vc_formula=vc_formula)
     last_err, fallback = None, None
     for method in ('lbfgs', 'bfgs', 'powell', 'nm'):
         try:
@@ -299,7 +308,13 @@ def assess_fit(test: str, posthoc: str, correction: str, a: dict) -> list:
     if design == 'long' and a['min_n'] < 3:
         out.append(('error', f"Repeated-measures models need at least 3 subjects per group (min n = {a['min_n']})."))
 
-    if parametric and not a['normal']:
+    if test == 'progression' and a['n_timepoints'] < 3:
+        out.append(('error', "The progression model needs at least 3 timepoints."))
+    if test == 'progression' and not a['normal']:
+        out.append(('warning', f"Raw residuals are not normally distributed ({a['normality_test']} p = {fmt_p(np_)}, "
+                               f"skew = {a['skew']:.2f}). For skewed positive measurements (SD, CV) enable "
+                               "**Log-transform**; the model's own residual check is shown after fitting."))
+    elif parametric and not a['normal']:
         alt = _NONPARAM_ALT.get(test)
         out.append(('warning', f"Residuals are not normally distributed ({a['normality_test']} p = {fmt_p(np_)}, "
                                f"skew = {a['skew']:.2f}). {name} assumes normality, so p-values may be unreliable."
@@ -347,6 +362,8 @@ def assess_fit(test: str, posthoc: str, correction: str, a: dict) -> list:
 
 
 def _n_comparisons(test, a):
+    if test == 'progression':
+        return 2 * (a['n_groups'] - 1)
     pairs = a['n_groups'] * (a['n_groups'] - 1) // 2
     return pairs * a['n_timepoints']
 
@@ -447,6 +464,111 @@ def _fit_gee(d, a, family, cov, notes):
     raise RuntimeError(f"GEE failed to fit: {err}")
 
 
+def _fit_progression(d, groups, log_y, notes):
+    """Mixed model with age as a continuous covariate.
+
+    Fixed: age (linear) * group + age² (shared curvature) [+ camera setup].
+    Random: subject intercept + age slope; with 2+ cohorts also cohort and recording
+    session (cohort x timepoint), so day-to-day setup differences are not read as group effects.
+    Returns (comparisons, omnibus, details)."""
+    d = d.copy()
+    if log_y:
+        if (d[Y] <= 0).any():
+            raise ValueError("log-transform needs strictly positive values")
+        d[Y] = np.log(d[Y])
+    lo, hi = float(d[TP].min()), float(d[TP].max())
+    center, span = (lo + hi) / 2, ((hi - lo) / 2) or 1.0
+    d['_t_'] = (d[TP] - center) / span          # -1..1 keeps the optimizer well scaled
+    d['_group_'] = pd.Categorical(d[GRP], categories=groups)   # first group = reference
+    d['_subj_'] = d[SUBJ].astype(str)
+
+    formula = f"{Y} ~ _t_ * C(_group_) + I(_t_ ** 2)"
+    use_setup = SETUP in d and d[SETUP].nunique() > 1
+    if use_setup:
+        # Reference = the setup used first in time, so the term reads "Setup: New".
+        first = d.groupby(SETUP)[TP].min().sort_values().index.astype(str).tolist()
+        d['_setup_'] = pd.Categorical(d[SETUP].astype(str), categories=first)
+        formula += " + C(_setup_)"
+    n_cohorts = d[COHORT].nunique() if COHORT in d else 0
+    if n_cohorts >= 2:
+        d['_cohort_'] = d[COHORT].astype(str)
+        d['_sess_'] = d['_cohort_'] + '_' + d[TP].astype(str)
+        vc = {'subj': '0 + C(_subj_)', 'sess': '0 + C(_sess_)'}
+        structures = [('_cohort_', '1', {**vc, 'subj_t': '0 + C(_subj_):_t_'}), ('_cohort_', '1', vc)]
+    else:
+        structures = [('_subj_', '~_t_', None), ('_subj_', '1', None)]
+
+    res, used, err = None, 0, None
+    for i, (grp, re_f, vc_f) in enumerate(structures):
+        try:
+            r = _fit_mixedlm(d, formula, grp, re_f, vc_f)
+        except Exception as e:
+            err = e
+            continue
+        if res is None or (r.converged and not res.converged):
+            res, used = r, i
+        if r.converged:
+            break
+    if res is None:
+        raise RuntimeError(f"progression model failed to fit: {err}")
+    if used > 0:
+        notes.append(('info', "Individual age slopes could not be estimated; the model uses random intercepts only."))
+    if not res.converged:
+        notes.append(('warning', "The progression model did not fully converge; treat p-values with caution."))
+
+    fe, se_, pv = res.fe_params, res.bse_fe, res.pvalues
+    ref = groups[0]
+    rows = []
+    for g in groups[1:]:
+        lv, sl = f"C(_group_)[T.{g}]", f"_t_:C(_group_)[T.{g}]"
+        if lv not in fe:
+            continue
+        rows.append({'Effect': f"Level difference at week {center:g}", 'Group A': ref, 'Group B': g,
+                     'Difference (B − A)': fe[lv], 'SE': se_[lv], 'p_unc': pv[lv]})
+        rows.append({'Effect': "Rate difference per week", 'Group A': ref, 'Group B': g,
+                     'Difference (B − A)': fe[sl] / span, 'SE': se_[sl] / span, 'p_unc': pv[sl]})
+    comps = pd.DataFrame(rows)
+    if log_y and not comps.empty:
+        comps['% difference'] = (np.exp(comps['Difference (B − A)']) - 1) * 100
+
+    # Fixed-effects table, age terms rescaled back to "per week".
+    def name(term):
+        if term == 'Intercept':
+            return f"Intercept (reference group, week {center:g})"
+        if term == '_t_':
+            return "Age, per week (reference group)"
+        if term == 'I(_t_ ** 2)':
+            return "Age², per week² (all groups)"
+        if term.startswith('_t_:C(_group_)[T.'):
+            return f"Age × {term[17:-1]} (rate difference per week)"
+        if term.startswith('C(_group_)[T.'):
+            return f"{term[13:-1]} vs {ref} (level at week {center:g})"
+        if term.startswith('C(_setup_)[T.'):
+            return f"Setup: {term[13:-1]}"
+        return term
+    scale = {t: (span ** 2 if t == 'I(_t_ ** 2)' else span if '_t_' in t else 1.0) for t in fe.index}
+    omni = pd.DataFrame({'Source': [name(t) for t in fe.index],
+                         'Estimate': [fe[t] / scale[t] for t in fe.index],
+                         'SE': [se_[t] / scale[t] for t in fe.index],
+                         'z': [fe[t] / se_[t] for t in fe.index],
+                         'p': [pv[t] for t in fe.index]})
+
+    resid = np.asarray(res.resid)
+    method = 'shapiro' if len(resid) < 20 else 'normaltest'
+    norm_p = float(pg.normality(resid, method=method)['pval'].iloc[0]) if len(resid) >= 3 else np.nan
+    skew = float(stats.skew(resid))
+    # Same rule as check_assumptions: with 100+ residuals and mild skew the test is over-sensitive.
+    ok = np.isnan(norm_p) or norm_p >= 0.05 or (len(resid) >= 100 and abs(skew) < 1.0)
+    notes.append(('info' if ok else 'warning',
+                  f"Progression model residuals: skew = {skew:.2f}, normality p = {fmt_p(norm_p)}"
+                  + (" (acceptable: large sample, mild skew)" if ok and norm_p < 0.05 else "")
+                  + ("" if ok or log_y else " — try **Log-transform** if the values are positive and skewed")
+                  + "."))
+    details = {'center': center, 'log': log_y, 'n_cohorts': n_cohorts, 'setup': use_setup,
+               'random_slopes': used == 0, 'converged': bool(res.converged)}
+    return comps, omni, details
+
+
 def _dunn(sub, groups):
     """Dunn's test (tie-corrected) on ranks pooled over the selected groups."""
     ranks = stats.rankdata(sub[Y])
@@ -533,7 +655,7 @@ def _cross_sectional(d, test, posthoc, groups, tps):
 def run_analysis(df: pd.DataFrame, test: str = 'auto', posthoc: str = 'auto',
                  correction: str = DEFAULT_CORRECTION, alpha: float = 0.05,
                  gee_family: str = 'auto', gee_cov: str = 'auto', metric_name: str = "the outcome",
-                 assumptions: dict = None) -> dict:
+                 assumptions: dict = None, log_y: bool = False) -> dict:
     """Run the chosen analysis. 'auto' resolves to the recommended test / default post-hoc."""
     d = _prep(df)
     a = assumptions or check_assumptions(df, alpha)
@@ -583,6 +705,9 @@ def run_analysis(df: pd.DataFrame, test: str = 'auto', posthoc: str = 'auto',
             result['omnibus'] = _wald_table(res)
             comps = _model_contrasts(res, d, groups, tps)
             result['details'].update({'family': fam, 'cov_struct': cov, 'cov_type': cov_type})
+        elif test == 'progression':
+            comps, result['omnibus'], det = _fit_progression(d, groups, log_y, notes)
+            result['details'].update(det)
         else:
             result['omnibus'], comps = _cross_sectional(d, test, posthoc, groups, tps)
     except Exception as e:
@@ -628,13 +753,26 @@ def methods_text(result: dict, metric_name: str = "the outcome") -> str:
         parts.append(f"{metric_name} was analysed with generalized estimating equations ({det.get('family', '')} "
                      f"family, {det.get('cov_struct', '')} working correlation, {se_text}) with time, "
                      "group and their interaction as factors. Terms were tested with Wald χ² tests.")
+    elif test == 'progression':
+        det = result['details']
+        log = "Values were log-transformed before analysis. " if det.get('log') else ""
+        setup = " and recording setup as a covariate" if det.get('setup') else ""
+        slope = "random intercepts and age slopes per subject" if det.get('random_slopes') else \
+            "random intercepts per subject"
+        rand = (f"{slope}, plus random intercepts for cohort and recording session (cohort × timepoint)"
+                if det.get('n_cohorts', 0) >= 2 else slope)
+        parts.append(f"{log}{metric_name} was analysed with a linear mixed-effects model (REML) with age in weeks as a "
+                     f"continuous covariate (centred at week {det.get('center', 0):g}), group, their interaction and a "
+                     f"common quadratic age term as fixed effects{setup}, and {rand}. The group term (difference at "
+                     "the centre week) and the group × age interaction (difference in rate of change per week) "
+                     "were tested with Wald z-tests.")
     else:
         each = " at each timepoint separately" if a['n_timepoints'] > 1 else ""
         parts.append(f"Group differences in {metric_name} were tested{each} with the {label(test)}.")
 
     if posthoc == 'model':
         parts.append("Groups were compared at each timepoint with contrasts derived from the fitted model.")
-    elif posthoc != 'direct':
+    elif posthoc not in ('direct', 'trend'):
         parts.append(f"Post-hoc comparisons used {POSTHOCS[posthoc]}.")
     if uses_correction(posthoc) and _n_comparisons(test, a) > 1:
         parts.append(f"P-values were adjusted for multiple comparisons with the {result['correction']} method."
@@ -661,6 +799,8 @@ if __name__ == "__main__":
             assert r['error'] is None, (t, ph, r['error'])
             c = r['comparisons']
             ab = c[(c['Group A'] == 'A') & (c['Group B'] == 'B')]
+            if t == 'progression':      # constant B effect: level differs, rate does not
+                ab = ab[ab['Effect'].str.startswith('Level')]
             assert (ab['p_corr'] < 0.05).all() and (ab['Difference (B − A)'] > 0).all(), (t, ph, ab)
     two = df[df[GRP] != 'C']
     for t in available_tests(2, 1):
@@ -690,5 +830,26 @@ if __name__ == "__main__":
     assert TESTS[t_rec][1] != 'long' and run_analysis(tiny)['error'] is None, t_rec
     overl = pd.concat([df, df[df[GRP] == 'A'].assign(**{GRP: 'C'})])
     assert run_analysis(overl, 'lmm')['error'].startswith("8 subject(s)")
+    # Progression model: group B declines faster (rate effect), no level effect at the centre week.
+    prog = []
+    for g in ['A', 'B']:
+        for s in range(12):
+            u, cohort = rng.normal(), f"C{s % 3}"
+            for t in range(4, 53, 8):
+                shift = 2.0 * (t >= 36)                       # camera setup change shared by everyone
+                prog.append({SUBJ: f"{g}{s}", GRP: g, TP: t, COHORT: cohort, SETUP: 'New' if t >= 36 else 'Old',
+                             Y: 50 + u - (0.15 * (t - 28) if g == 'B' else 0) + shift + rng.normal(scale=0.5)})
+    prog = pd.DataFrame(prog)
+    for frame in (prog.drop(columns=[COHORT, SETUP]), prog):
+        r = run_analysis(frame, 'progression')
+        assert r['error'] is None, r['error']
+        c = r['comparisons'].set_index('Effect')
+        rate = c.loc['Rate difference per week']
+        assert rate['p_corr'] < 0.001 and abs(rate['Difference (B − A)'] + 0.15) < 0.05, rate
+        assert c.filter(like='Level', axis=0)['p_unc'].iloc[0] > 0.05
+    assert r['details']['setup'] and r['details']['n_cohorts'] == 3 and 'cohort' in r['methods']
+    lg = run_analysis(prog, 'progression', log_y=True)
+    assert lg['error'] is None and '% difference' in lg['comparisons'] and 'log-transformed' in lg['methods']
+    assert 'progression' not in available_tests(2, 2)
     assert p_to_stars(0.00001) == "****" and p_to_stars(0.2) == "ns"
     print("stats_engine self-check passed")

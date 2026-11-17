@@ -31,6 +31,8 @@ st.markdown("""
         * Drag and drop your data file into the upload box.
         * **Sidebar → Display settings**: switch distance units (m / mm), set group colors (after Step 3), the
           significance marker color (use white in dark mode) and the plot size used on screen and in exported PNGs.
+        * **Units & measurements → Add left/right averages** adds an `(L/R mean)` measurement for every Left/Right
+          pair. Fewer measurements = less multiple-testing penalty.
 
         ### Step 2: Check your data (📂 Data tab)
         * The header shows how many sheets, measurements and unique trial IDs were found.
@@ -40,7 +42,10 @@ st.markdown("""
         1. Edit the table: *Group Name* is shown on plots, *Tag in ID* is the text searched for in each ID (e.g. "WT_M").
         2. Click **Extract variables from IDs**.
         3. Optionally **exclude subjects** (outliers, dropouts) from every plot and statistic.
-        4. Check the **Group summary** (subjects, timepoints, trials per group) and the **Troubleshooting** panel for
+        4. Optionally fill **Cohorts & recording setup**: one row per cohort with its animal IDs (comma-separated;
+           `2273` matches `2273_1L`, `2273_2R`, ...) and, if the camera setup changed, the first week recorded with the
+           new setup. Use it when animals started at different times. Only the **Progression model** uses it.
+        5. Check the **Group summary** (subjects, timepoints, trials per group) and the **Troubleshooting** panel for
            IDs without a group or timepoint.
 
         ### Step 4: Statistical analysis (🧮 Statistical Analysis tab)
@@ -58,8 +63,18 @@ st.markdown("""
            alternative. You can still run the test — the decision is yours.
         5. Results are split into tabs: **Graph**, **Multiple comparisons** (with CSV download), **Omnibus / model**,
            **Assumptions**, and **Methods text** (a ready-to-adapt statistics paragraph for your manuscript).
-        6. **📦 Batch export** renders a 300-dpi PNG for every measurement in the sheet plus a
-           `statistics_summary.csv`, using the same test, post-hoc and correction you selected.
+        6. **📦 Batch export** renders a 300-dpi PNG for every selected measurement plus a
+           `statistics_summary.csv`, using the same test, post-hoc and correction you selected. Pick your
+           **primary outcomes** there: the column `p_corr_all_measurements` adjusts across all of them.
+
+        ### Progression model (3+ timepoints)
+        Tests whether groups **differ in level** (at the middle week) and whether they **change at different rates**
+        (per week), treating age as continuous instead of comparing every timepoint separately. A slowly
+        progressing phenotype is usually only detectable this way.
+        * With cohort information it also absorbs recording-day (cohort × week) and camera-setup differences.
+        * **Log-transform** is on by default for SD / CV sheets (skewed values); results are then % differences.
+        * On a CV sheet, measurements with negative values (signed velocity/acceleration, toe clearance) trigger a
+          warning: their CV is not meaningful — use the SD sheet.
 
         ### Step 5: Multivariate profiling (🕸️ Radar Profile tab)
         * Select at least 3 measurements, your groups and one timepoint — the plot updates automatically.

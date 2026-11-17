@@ -51,6 +51,7 @@ unequal variances). Leaving the test on **Auto** applies the recommendation sepa
 | 2+ groups, 2+ timepoints | Two-way RM ANOVA (mixed design) ★ (normal, balanced) | Model-based contrasts | Normality, complete data, sphericity (GG-corrected) |
 | | Mixed-effects model, REML ★ (normal, missing data) | Model-based contrasts | Normality of residuals |
 | | Generalized estimating equations ★ (non-normal) | Model-based contrasts | Many subjects (robust SEs) |
+| 2+ groups, 3+ timepoints | Progression model (continuous age, mixed-effects) | Level and rate contrasts vs reference | Normality of residuals (log option) |
 | | Any 1-timepoint test above, run at each timepoint | as above | Ignores repeated measures (warned) |
 
 **Two-way RM ANOVA** removes subjects with any missing timepoint (listwise deletion), which loses power and can cause
@@ -60,6 +61,13 @@ family (chosen automatically or by you) with an autoregressive, exchangeable or 
 few subjects (< 40) plain sandwich errors are too small, so the app switches to the Mancl-DeRouen bias-reduced
 version. Repeated-measures models need at least 3 subjects per group; with fewer, *Auto* tests each timepoint
 separately instead.
+
+The **progression model** treats age as a continuous covariate (linear × group, plus a shared quadratic curve) with a
+random intercept and age slope per subject. It reports two contrasts per group: the **level difference** at the middle
+week and the **difference in rate of change per week**. One rate test replaces many per-timepoint tests, so slowly
+progressing phenotypes are detected with much more power. With the optional cohort table it adds random effects for
+cohort and recording session (cohort × week) and a fixed effect for a camera-setup change. A log-transform option
+(default for SD/CV sheets) reports results as % differences.
 
 **Model-based contrasts** compare each pair of groups at each timepoint using the fitted model's covariance (the pooled
 repeated-measures error term, as Prism does), rather than treating timepoints as independent samples. Omnibus effects
