@@ -5,6 +5,7 @@ import re
 import tempfile
 import warnings
 import zipfile
+from itertools import combinations
 
 import matplotlib
 matplotlib.use("Agg")
@@ -552,8 +553,9 @@ with tab_groups:
         def guess(words, default=None):
             return next((c for c in cols if any(w in str(c).lower() for w in words)), default)
 
-        st.markdown("Pick which columns describe each row. Several group columns are combined "
-                    "(e.g. *Experimental Group* + *Gender* → `WT F`). Rows of the same animal and timepoint "
+        st.markdown("Pick which columns describe each row. With several group columns, every combination "
+                    "becomes a group (e.g. *Experimental Group* + *Gender* → `WT`, `TG`, `F`, `M`, `WT F`, …). "
+                    "Rows of the same animal and timepoint "
                     "(several trials) are averaged.")
         m1, m2, m3 = st.columns(3)
         subj_col = m1.selectbox("Animal / subject column", cols,
@@ -580,17 +582,31 @@ with tab_groups:
             st.error("Pick at least one group column.")
         elif clicked:
             cfg = {'subject': subj_col, 'timepoint': tp_col}
-            mapping = pd.DataFrame({
+            base = pd.DataFrame({
                 'Ids': row_key(first_raw, cfg),
                 TP: pd.to_numeric(first_raw[tp_col], errors='coerce') * weeks_per,
                 'Subject_ID': first_raw[subj_col].astype(str).str.strip(),
-                'Group': first_raw[group_cols].astype(str).apply(lambda r: " ".join(v.strip() for v in r), axis=1),
             })
-            mapping.loc[first_raw[group_cols].isna().any(axis=1), 'Group'] = "Unknown"
             if sex_col != "None":
                 sx = first_raw[sex_col].astype(str).str.strip().str.upper()
-                mapping[se.SEX] = sx.replace({'MALE': 'M', 'FEMALE': 'F', 'NAN': 'Unknown', '': 'Unknown'})
-            st.session_state.mapping_df = mapping.drop_duplicates('Ids').reset_index(drop=True)
+                base[se.SEX] = sx.replace({'MALE': 'M', 'FEMALE': 'F', 'NAN': 'Unknown', '': 'Unknown'})
+            # Every combination of the group columns is a group (Group, Gender, Group + Gender),
+            # so a row belongs to several groups at once, like overlapping tags in ID mode.
+            vals = first_raw[group_cols].fillna('').astype(str).apply(lambda c: c.str.strip())
+            parts = []
+            for k in range(len(group_cols), 0, -1):
+                for combo in combinations(group_cols, k):
+                    combo = list(combo)
+                    part = base.assign(Group=vals[combo].agg(" ".join, axis=1))
+                    missing = first_raw[combo].isna().any(axis=1)
+                    if k == len(group_cols):
+                        part.loc[missing, 'Group'] = "Unknown"
+                        cfg['full_groups'] = sorted(part['Group'].unique())
+                    else:
+                        part = part[~missing]
+                    parts.append(part)
+            mapping = pd.concat(parts, ignore_index=True)
+            st.session_state.mapping_df = mapping.drop_duplicates(['Ids', 'Group']).reset_index(drop=True)
             st.session_state.meta_cfg = cfg
             st.session_state.meta_cols = [subj_col, tp_col, *group_cols] + ([sex_col] if sex_col != "None" else [])
             st.rerun()
@@ -599,9 +615,10 @@ with tab_groups:
         mapping_all = st.session_state.mapping_df
         st.success("Variables extracted. Group colors are now available in the sidebar.")
         if st.session_state.get('meta_cfg'):
-            # In metadata mode every row has one group, so an animal in two groups is a labelling error.
-            n_grp = mapping_all.groupby('Subject_ID')['Group'].transform('nunique')
-            odd = mapping_all[n_grp > 1]
+            # Each row has one full-combination group, so an animal in two of those is a labelling error.
+            full = mapping_all[mapping_all['Group'].isin(st.session_state.meta_cfg.get('full_groups', []))]
+            n_grp = full.groupby('Subject_ID')['Group'].transform('nunique')
+            odd = full[n_grp > 1]
             if not odd.empty:
                 main = odd.groupby('Subject_ID')['Group'].agg(lambda g: g.value_counts().index[0])
                 wrong = odd[odd['Group'] != odd['Subject_ID'].map(main)]
