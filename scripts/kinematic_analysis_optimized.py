@@ -207,11 +207,17 @@ def active_mapping():
     return mapping
 
 
+def screen_width(px):
+    """On-screen plot width: fill the page unless the user turned 'Fill available width' off."""
+    return 'stretch' if st.session_state.get('fill_width', True) else px
+
+
 def metric_columns(df):
-    """Numeric measurement columns (metadata columns such as group, sex or timepoint excluded)."""
+    """Numeric measurement columns (metadata columns such as group, sex or timepoint excluded).
+    'QC ...' columns rate the tracking quality, not the animal, so they are hidden too."""
     meta = set(st.session_state.get('meta_cols', ())) | {'Ids'}
     # "Mostly numeric" rather than dtype, so a stray text cell does not hide a measurement.
-    return [c for c in df.columns if c not in meta
+    return [c for c in df.columns if c not in meta and not str(c).startswith('QC ')
             and (pd.api.types.is_numeric_dtype(df[c]) or pd.to_numeric(df[c], errors='coerce').notna().mean() > 0.5)]
 
 
@@ -310,7 +316,7 @@ def render_plot_section(final_df, comparisons, color_map, plot_metric, timepoint
 
     fig.update_layout(margin=dict(t=50), width=plot_width, height=plot_height,
                       font=dict(family="Segoe UI Semibold", size=16))
-    st.plotly_chart(fig, width=plot_width)  # "stretch" overrides the layout width
+    st.plotly_chart(fig, width=screen_width(plot_width))  # "stretch" overrides the layout width
 
 
 def render_single_metric_job(metric, df_sheet, mapping, timepoints, group_order, color_map,
@@ -452,8 +458,11 @@ with st.sidebar:
     with st.expander("📐 Plot appearance", expanded=False):
         annotation_color = st.color_picker("Significance marker color", "#000000",
                                            help="Use white (#FFFFFF) in dark mode.")
+        st.checkbox("Fill available width", value=True, key="fill_width",
+                    help="On-screen plots stretch to the page. Turn off to use the width below on screen too.")
         plot_width = st.slider("Plot width (px)", 600, 2400, 1000, 50,
-                               help="Applies to on-screen plots and exported PNGs.")
+                               help="Width of exported PNGs, and of on-screen plots when "
+                                    "'Fill available width' is off.")
         plot_height = st.slider("Plot height (px)", 400, 1600, 600, 50)
 
 data_base = add_lr_means(convert_units(raw_data_dict, file_key, distance_unit),
@@ -1022,4 +1031,4 @@ with tab_radar:
                     polar=polar, width=plot_width, height=plot_height,
                     title=f"Kinematic profile at week {radar_tp} — {radar_sheet} "
                           f"({'normalized' if normalize_radar else 'raw values'})")
-                st.plotly_chart(fig_radar, width=plot_width)
+                st.plotly_chart(fig_radar, width=screen_width(plot_width))

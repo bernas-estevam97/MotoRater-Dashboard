@@ -199,6 +199,8 @@ def check_assumptions(df: pd.DataFrame, alpha: float = 0.05) -> dict:
     # Overlapping tags (e.g. 'Transgenic' and 'TG Female') put one subject in several groups.
     per_subj = d.groupby(SUBJ)[GRP].nunique()
     a['overlapping_subjects'] = sorted(per_subj[per_subj > 1].index)
+    # e.g. 'QC Tracked Frames (%)' = 100 in every session: nothing to compare.
+    a['constant'] = d[Y].nunique() <= 1
 
     # Residual normality: residuals of the model that matches the design.
     resid = None
@@ -304,6 +306,9 @@ def assess_fit(test: str, posthoc: str, correction: str, a: dict) -> list:
         return [('error', f"{len(a['overlapping_subjects'])} subject(s) belong to more than one selected group "
                           f"({shown}...). Groups must not overlap — e.g. do not combine 'Transgenic' with "
                           "'TG Female'.")]
+    if a.get('constant'):
+        return [('error', "This measurement has the same value in every selected session, so there is no "
+                          "difference to test.")]
     if a['min_n'] < 2:
         return [('error', f"At least one group has fewer than 2 subjects (min n = {a['min_n']}). No test can be run.")]
     if design == 'long' and a['min_n'] < 3:
@@ -730,6 +735,9 @@ def run_analysis(df: pd.DataFrame, test: str = 'auto', posthoc: str = 'auto',
             if complete[GRP].nunique() < a['n_groups']:
                 raise RuntimeError("no group has complete data for every timepoint")
             aov = pg.mixed_anova(dv=Y, within=TP, between=GRP, subject=SUBJ, data=complete, correction=True)
+            if 'p_unc' not in aov.columns:  # pingouin drops F/p when the error variance is zero
+                raise RuntimeError("the values do not vary within subjects or groups (e.g. always 100%), "
+                                   "so the ANOVA cannot be computed. Try GEE or a non-parametric test.")
             p = aov['p_unc'].astype(float).copy()
             if 'p_GG_corr' in aov.columns and not a['sphericity']:
                 p = aov['p_GG_corr'].astype(float).fillna(p)
@@ -865,6 +873,9 @@ if __name__ == "__main__":
     assert not a2['balanced']
     assert any('listwise' in m for _, m in assess_fit('mixed_anova', 'model', DEFAULT_CORRECTION, a2))
     assert run_analysis(unb, 'mixed_anova')['details']['n_dropped'] == 1
+    # Constant measurement (e.g. QC Tracked Frames = 100%): clear error, not a KeyError.
+    const = df.assign(**{Y: 100.0})
+    assert 'same value' in run_analysis(const, 'mixed_anova')['error']
     # GEE AR(1) with ~0 within-subject correlation and a 2-observation subject (statsmodels int bug).
     iid = unb.assign(**{Y: rng.normal(size=len(unb))})
     for cov in ('autoregressive', 'auto'):
