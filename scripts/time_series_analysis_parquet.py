@@ -13,6 +13,7 @@ except ImportError:
 
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from scripts.utils.file_utils import is_gui_available, safe_select_folder
+from scripts.utils.data_mappings import trim_footer
 
 # --- Page Configuration ---
 # st.set_page_config(page_title="MotoRater Data Dashboard", layout="wide")
@@ -155,11 +156,7 @@ def load_data_for_item(item_name: str, item_type: str, item_ref, sheet_name: str
                     if os.path.exists(tmp_path):
                         os.remove(tmp_path)
 
-        # Filter logic
-        if df is not None and "filtered" in item_name.lower() and ("kinematics" in item_name.lower() or sheet_name == "Kinematics"):
-            if len(df) > 6:
-                df = df.iloc[:-6]
-        return df
+        return None if df is None else trim_footer(df)
     except Exception:
         return None
 

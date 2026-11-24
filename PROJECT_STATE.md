@@ -236,3 +236,9 @@ broken left hindpaw toe clearance, ~6% half-length Step Length sessions, run dur
 * **[2026-11-17]** (`prod_pro`): metadata-column extraction, sex / numeric covariates, 95% CIs, session exclusion and
   outlier panel, L/R agreement warning, fitted trend lines, log Y axis, token tag matching, Protraction/Retraction
   unit fix. See section L. Not yet ported to `pro-cloud`; Word/PDF guide not yet updated for these.
+* **[2026-11-24]** (`prod_pro`): `docs/MotoRater Suite - User Manual.md` added (whole-app manual: upstream pipeline,
+  input rules, variable extraction, statistics, graphs, measurement dictionary, limitations, troubleshooting).
+  Fixes found while writing it: filtered-file summary rows are now removed by `trim_footer()` (keeps numeric-`Time`
+  rows; previously the Excel page cut 7 rows, the Parquet page 6 and the converter 7 only for a lowercase
+  `kinematics` sheet, while v1/v2 files have 9/10 rows); radar averages per animal before per group; m→mm also
+  converts `(m/s^2)` columns; landing-page and time-series tutorial text updated.

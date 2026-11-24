@@ -53,5 +53,5 @@ Depending on the behavior you are analyzing, different charts will reveal differ
 ## 💡 Pro Tips
 
 * **🌊 Noise Reduction:** Behavioral tracking data can be incredibly noisy. If your **Line Chart** looks like a messy scribble, use the **Noise Reduction (Rolling Avg)** slider. This smooths out micro-jitters in the tracking data, making macro-trends much easier to see.
-* **Smart Filtering:** If you are analyzing a "filtered" Kinematics file, the dashboard automatically removes the bottom 6 rows of metadata to prevent the app from crashing and ensures your data types are clean.
+* **Smart Filtering:** Filtered files have a summary block under the frames (Time Duration, Mean, Std, Median, Min, Max, Max_Normalized_Mean, CV and, in v2 files, Height Window). The dashboard and the converter keep only rows with a numeric **Time** value, so these summary rows never appear as data points.
         """)

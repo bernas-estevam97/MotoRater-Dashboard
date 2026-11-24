@@ -76,9 +76,11 @@ def convert_units(_raw: dict, filename: str, unit: str) -> dict:
         df = df.copy()
         rename = {}
         for col in df.columns:
-            if isinstance(col, str) and col.endswith(("(m)", "(m/s)", "(m/s²)")):
+            # '(m/s^2)' too: the rename map only covers groundwalk names, not 'Front Right Paw Ax (m/s^2)'.
+            if isinstance(col, str) and col.endswith(("(m)", "(m/s)", "(m/s²)", "(m/s^2)")):
                 df[col] = pd.to_numeric(df[col], errors='coerce') * 1000
-                rename[col] = col.replace("(m)", "(mm)").replace("(m/s)", "(mm/s)").replace("(m/s²)", "(mm/s²)")
+                rename[col] = (col.replace("(m)", "(mm)").replace("(m/s)", "(mm/s)").replace("(m/s²)", "(mm/s²)")
+                               .replace("(m/s^2)", "(mm/s²)"))
         out[sheet] = df.rename(columns=rename)
     return out
 
@@ -1016,7 +1018,9 @@ with tab_radar:
             if merged.empty:
                 st.warning(f"No data for the selected measurements and groups at week {radar_tp}.")
             else:
-                agg = merged.groupby('Group')[radar_metrics].mean()
+                # Average trials per animal first (as in the statistics), so animals with more trials
+                # do not weigh more in their group mean.
+                agg = merged.groupby(['Group', 'Subject_ID'])[radar_metrics].mean().groupby('Group').mean()
                 if normalize_radar:
                     agg = agg / agg.max().replace(0, np.nan)
                     agg = agg.fillna(0.0)

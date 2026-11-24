@@ -34,6 +34,8 @@ with st.expander("Before you start", expanded=False):
     st.markdown("""
 - Use **already filtered** MotoRater files with the time-series dashboards. Raw MotoRater output contains noise and
   filler data that can cause problems.
-- The **Kinematics Longitudinal Analysis** tool uses a file built from all filtered files of your experiment. Ask the
-  developer for this file — the grouping/filtering algorithm is not yet available as a user tool.
+- The **Kinematics Longitudinal Analysis** tool uses one file built from all filtered files of your experiment (one
+  row per trial or session, one sheet per statistic). Groups, timepoints and sex are extracted inside the tool; the
+  filtering and merging scripts that build the file are not yet part of the app — ask the developer for them.
+- The full user manual is in `docs/MotoRater Suite - User Manual.md`.
 """)

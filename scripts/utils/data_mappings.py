@@ -57,6 +57,26 @@ def get_column_rename_map() -> dict:
     return column_rename_map.copy()
 
 
+def trim_footer(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop the summary block that the filtering scripts write under the Kinematics frames
+    (blank row, 'Time Duration', Mean/Std/Median/Min/Max/Max_Normalized_Mean/CV, 'Height Window').
+    Those rows carry a label instead of a number in 'Time', so keeping numeric-Time rows works for
+    v1 (9 footer rows) and v2 (10) files and is a no-op on already-trimmed data. Text columns that
+    become fully numeric are converted."""
+    if 'Time' not in df.columns:
+        return df
+    t = pd.to_numeric(df['Time'], errors='coerce')
+    if t.notna().all():
+        return df
+    out = df[t.notna()].copy()
+    for col in out.select_dtypes(include=['object']).columns:
+        try:
+            out[col] = pd.to_numeric(out[col])
+        except (ValueError, TypeError):
+            pass
+    return out
+
+
 def format_pval(x) -> str:
     """Format a p-value float with scientific precision."""
     if pd.isna(x):
@@ -66,3 +86,16 @@ def format_pval(x) -> str:
         return f"{val:.4f}" if val > 0.0001 else "<0.0001"
     except (ValueError, TypeError):
         return str(x)
+
+
+if __name__ == "__main__":
+    # Self-check: v2 footer (blank, Time Duration, 7 stats, Height Window) is removed, data kept, idempotent.
+    frames = pd.DataFrame({'Time': [0.0, 0.01, 0.02], 'Hip Height (Left)': [1.0, 2.0, 3.0]})
+    labels = ['Time Duration', 'Mean', 'Std', 'Median', 'Min', 'Max', 'Max_Normalized_Mean', 'CV',
+              'Height Window (start, end s)']
+    footer = pd.DataFrame({'Time': [None] + labels, 'Hip Height (Left)': [None] + [9.0] * len(labels)})
+    raw = pd.concat([frames, footer], ignore_index=True).astype(object)
+    out = trim_footer(raw)
+    assert len(out) == 3 and out['Time'].dtype.kind == 'f', out
+    assert trim_footer(out) is out
+    print("data_mappings self-check passed")
