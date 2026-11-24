@@ -1,7 +1,6 @@
 # MotoRater Suite — User Manual
 
 **Application:** MotoRater Suite (Streamlit)
-**Branch documented:** `pro-cloud` (Streamlit Cloud, https://motorater-dashboard.streamlit.app/). All files are uploaded in the browser and results are downloaded. The `prod_pro` branch (local workstation) has the same analysis features plus local folder access.
 **Document date:** 24 November 2026
 **Maintainer:** Bernardo Estevam
 
@@ -83,11 +82,11 @@ Video recording
 calculations_<experiment>.py ──►  <name>_processed.xlsx
    │                               sheets: "Positions (used)", "Kinematics"
    ▼
-optimized_excel_filtering_v2.py ─► <name>_filtered.xlsx  (+ error_log.txt)
+filtering_algorithm.py ─► <name>_filtered.xlsx  (+ error_log.txt)
    │                               Kinematics sheet rebuilt, cut to the movement window,
    │                               heights relative to the floor, QC columns, summary rows
    ▼
-optimized_descriptive_stats_all_in_one.py ─► <EXPERIMENT>_descriptive_statistics.xlsx
+descriptive_stats_prep.py ─► <EXPERIMENT>_descriptive_statistics.xlsx
    │                               one sheet per statistic, one row per trial or session
    ▼
 (optional) merging / adding metadata columns (group, sex, timepoint)
@@ -113,7 +112,7 @@ Version 1 of these scripts damaged the saved Kinematics sheet in four ways:
 
 The Positions (used) sheet was written before these steps. Filtering v2 therefore uses it as the source.
 
-### 3.2 Filtering v2 (`optimized_excel_filtering_v2.py`)
+### 3.2 Filtering
 
 Each `*_processed.xlsx` file is processed in its own process. Files that already have a `_filtered.xlsx` in the output folder are skipped.
 
@@ -152,7 +151,7 @@ Each `*_processed.xlsx` file is processed in its own process. Files that already
 
 **Prompts asked once per run:** input/output folder, start marker (0 tail tip, 1 tail centre, 2 tail base, 3 both hind paws), species (Mus, Acomys), experiment type, old/new setup, hind-paw height cutoff (yes/no), floor reference (auto/fixed), swing speed threshold.
 
-### 3.3 All-in-one descriptive statistics (`optimized_descriptive_stats_all_in_one.py`)
+### 3.3 Descriptive statistics setup
 
 This script reads the summary rows of every `*filtered.xlsx` file in a folder and writes `<EXPERIMENT>_descriptive_statistics.xlsx`:
 
