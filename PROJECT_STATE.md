@@ -236,3 +236,8 @@ broken left hindpaw toe clearance, ~6% half-length Step Length sessions, run dur
 * **[2026-11-17]** (`pro-cloud`): ported from `prod_pro`: metadata-column extraction, sex / numeric covariates,
   95% CIs, session exclusion and outlier panel, L/R agreement warning, fitted trend lines, log Y axis, token tag
   matching, Protraction/Retraction unit fix. See section M. Word/PDF guide not yet updated for these.
+* **[2026-11-24]** (`pro-cloud`): ported from `prod_pro`: `docs/MotoRater Suite - User Manual.md` (adapted to the
+  cloud: uploads, 20-file limit, converter ZIP download, 2 batch workers); `trim_footer()` removes filtered-file
+  summary rows in both time-series pages and the converter (keeps numeric-`Time` rows instead of cutting a fixed
+  6 or 7 rows); radar averages per animal before per group; m→mm also converts `(m/s^2)` columns; landing-page and
+  time-series tutorial text updated.

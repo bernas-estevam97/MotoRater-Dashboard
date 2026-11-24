@@ -7,6 +7,7 @@ import io
 import os
 import tempfile
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+from scripts.utils.data_mappings import trim_footer
 
 # --- Page Configuration ---
 # st.set_page_config(page_title="MotoRater Data Dashboard", layout="wide")
@@ -91,12 +92,7 @@ def load_data(file_name, file_bytes, sheet_name):
                     os.remove(tmp_path)
         else:
             return None
-        
-        if "filtered" in file_name.lower() and ("kinematics" in file_name.lower() or sheet_name == "Kinematics"):
-            if len(df) > 6:
-                df = df.iloc[:-6]
-                
-        return df
+        return trim_footer(df)
     except Exception:
         return None
 

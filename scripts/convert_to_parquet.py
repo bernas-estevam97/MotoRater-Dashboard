@@ -5,6 +5,7 @@ import time
 import zipfile
 import tempfile
 from io import BytesIO
+from scripts.utils.data_mappings import trim_footer
 
 # --- Page Configuration ---
 try:
@@ -34,7 +35,8 @@ st.divider()
 
 
 def _convert_objects_to_numeric(df: pd.DataFrame) -> pd.DataFrame:
-    """Safely converts object columns to numeric without using deprecated errors='ignore'."""
+    """Drops the filtering-script summary rows (see trim_footer), then converts object columns to numeric."""
+    df = trim_footer(df)
     for col in df.select_dtypes(include=['object']).columns:
         try:
             df[col] = pd.to_numeric(df[col])
@@ -83,8 +85,6 @@ if st.button("🚀 Start Conversion", type="primary", width="stretch"):
                                 with zipfile.ZipFile(internal_zip_path, 'w', zipfile.ZIP_DEFLATED) as sheet_zip:
                                     for sheet in sheet_names:
                                         df = pd.read_excel(xls, sheet_name=sheet)
-                                        if "_filtered" in file_base_name and sheet == "kinematics":
-                                            df = df.iloc[:-7]
                                         df = _convert_objects_to_numeric(df)
                                         
                                         temp_pq = os.path.join(temp_dir, f"temp_{sheet}.parquet")
@@ -98,8 +98,6 @@ if st.button("🚀 Start Conversion", type="primary", width="stretch"):
                             else:
                                 sheet = sheet_names[0]
                                 df = pd.read_excel(xls, sheet_name=sheet)
-                                if "_filtered" in file_base_name and sheet == "kinematics":
-                                    df = df.iloc[:-7]
                                 df = _convert_objects_to_numeric(df)
                                     
                                 pq_path = os.path.join(temp_dir, f"{file_base_name}.parquet")
@@ -111,8 +109,6 @@ if st.button("🚀 Start Conversion", type="primary", width="stretch"):
                             hdf5_path = os.path.join(temp_dir, f"{file_base_name}.h5")
                             for sheet in sheet_names:
                                 df = pd.read_excel(xls, sheet_name=sheet)
-                                if "_filtered" in file_base_name and sheet == "kinematics":
-                                    df = df.iloc[:-7]
                                 df = _convert_objects_to_numeric(df)
                                 safe_sheet_name = sheet.replace(" ", "_").replace("-", "_")
                                 df.to_hdf(hdf5_path, key=safe_sheet_name, mode='a', format='table')

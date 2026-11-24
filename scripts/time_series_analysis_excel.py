@@ -5,6 +5,7 @@ import concurrent.futures
 import threading
 import io
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+from scripts.utils.data_mappings import trim_footer
 
 # --- Page Configuration ---
 # st.set_page_config(page_title="MotoRater Data Dashboard", layout="wide")
@@ -74,17 +75,7 @@ def load_excel_data(file_bytes: bytes, sheet_name: str, file_name: str):
             df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, engine='calamine')
         except Exception:
             df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name)
-        
-        if "filtered" in file_name.lower() and sheet_name == "Kinematics":
-            if len(df) > 7: 
-                df = df.iloc[:-7]
-                cols_to_convert = df.select_dtypes(include=['object']).columns
-                for col in cols_to_convert:
-                    try:
-                        df[col] = pd.to_numeric(df[col])
-                    except (ValueError, TypeError):
-                        pass 
-        return df
+        return trim_footer(df)
     except Exception:
         return None
 
