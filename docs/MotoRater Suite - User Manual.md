@@ -1,7 +1,6 @@
 # MotoRater Suite — User Manual
 
 **Application:** MotoRater Suite (Streamlit)
-**Branch documented:** `prod_pro` (local workstation). The `pro-cloud` branch has the same analysis features with browser uploads, downloads and smaller worker limits.
 **Document date:** 24 November 2026
 **Maintainer:** Bernardo Estevam
 
@@ -59,7 +58,7 @@ The app opens on the **Welcome** page. The sidebar navigation has three sections
 | MotoRater Tools | **Kinematics Longitudinal Analysis** | Group comparisons over time, statistics, graphs, radar profiles, batch export | One merged file per experiment (`.xlsx`, `.h5`/`.hdf5`, `.parquet`, `.zip` of Parquet files) |
 | MotoRater Tools | Time-Series analysis – Excel Files | Plot single recordings frame by frame; compare recordings | Filtered per-recording `.xlsx`/`.xls` files |
 | MotoRater Tools | Time-Series analysis – Parquet & HDF5 Files | Same as above, faster loading | `.parquet`, `.h5`, `.hdf5`, or folders of them |
-| MotoRater Tools | Excel → Parquet/HDF5 Converter | Batch-convert Excel files (local workstation only) | Folder or selection of `.xlsx`/`.xls` files |
+| MotoRater Tools | Excel → Parquet/HDF5 Converter | Batch-convert Excel files and download them as one ZIP | Uploaded `.xlsx`/`.xls` files |
 | Guides | Tutorial – Kinematics | Short in-app tutorial | — |
 | Guides | Tutorial – Time Series | Short in-app tutorial | — |
 | Guides | Statistical Methodology | In-app summary of the statistics | — |
@@ -83,11 +82,11 @@ Video recording
 calculations_<experiment>.py ──►  <name>_processed.xlsx
    │                               sheets: "Positions (used)", "Kinematics"
    ▼
-optimized_excel_filtering_v2.py ─► <name>_filtered.xlsx  (+ error_log.txt)
+filtering_algorithm.py ─► <name>_filtered.xlsx  (+ error_log.txt)
    │                               Kinematics sheet rebuilt, cut to the movement window,
    │                               heights relative to the floor, QC columns, summary rows
    ▼
-optimized_descriptive_stats_all_in_one.py ─► <EXPERIMENT>_descriptive_statistics.xlsx
+descriptive_stats_prep.py ─► <EXPERIMENT>_descriptive_statistics.xlsx
    │                               one sheet per statistic, one row per trial or session
    ▼
 (optional) merging / adding metadata columns (group, sex, timepoint)
@@ -113,7 +112,7 @@ Version 1 of these scripts damaged the saved Kinematics sheet in four ways:
 
 The Positions (used) sheet was written before these steps. Filtering v2 therefore uses it as the source.
 
-### 3.2 Filtering v2 (`optimized_excel_filtering_v2.py`)
+### 3.2 Filtering
 
 Each `*_processed.xlsx` file is processed in its own process. Files that already have a `_filtered.xlsx` in the output folder are skipped.
 
@@ -152,7 +151,7 @@ Each `*_processed.xlsx` file is processed in its own process. Files that already
 
 **Prompts asked once per run:** input/output folder, start marker (0 tail tip, 1 tail centre, 2 tail base, 3 both hind paws), species (Mus, Acomys), experiment type, old/new setup, hind-paw height cutoff (yes/no), floor reference (auto/fixed), swing speed threshold.
 
-### 3.3 All-in-one descriptive statistics (`optimized_descriptive_stats_all_in_one.py`)
+### 3.3 Descriptive statistics setup
 
 This script reads the summary rows of every `*filtered.xlsx` file in a folder and writes `<EXPERIMENT>_descriptive_statistics.xlsx`:
 
@@ -518,7 +517,7 @@ The graph section reruns on its own, so changing a graph option does not recalcu
 
 ### 5.9 Batch export
 
-**📦 Batch export — all measurements in this sheet** renders every selected measurement of the current sheet in parallel and creates a ZIP file with:
+**📦 Batch export — all measurements in this sheet** renders every selected measurement of the current sheet (2 parallel workers on the cloud server) and creates a ZIP file with:
 
 - `<measurement>.png`: 300-dpi line plot of mean ± SEM per group, with stars (2 groups) and dashed trend lines (progression model). The size follows the plot width and height sliders.
 - `statistics_summary.csv`: every comparison of every measurement, with `Measurement` and `Test` columns.
@@ -547,8 +546,8 @@ There are two pages with the same functions: one reads Excel files, and one read
 
 ### 6.1 Loading files
 
-- **📂 Local Folder** (local workstation only): choose a folder with the folder button or type a path. The Parquet page also accepts sub-folders in which each file is one sheet (the output of a multi-sheet conversion after unzipping).
-- **📤 Upload Files:** drag and drop. This is the only option on Streamlit Cloud.
+- **Upload files** by drag and drop in the sidebar. A counter shows how many files are loaded. The limit is **20 files** per page; above it the page stops and offers **🗑️ Remove All Files (Start Over)**.
+- The Parquet page reads single `.parquet` files (one sheet named `Data (Parquet)`) and `.h5`/`.hdf5` files (one sheet per key). To use a multi-sheet ZIP from the converter, unzip it and upload the Parquet files.
 - Excel files are read with the fast `calamine` engine, with `openpyxl` as fallback. Results are cached for 30 minutes (up to 50 files).
 
 ### 6.2 Single-file mode
@@ -577,18 +576,16 @@ There are two pages with the same functions: one reads Excel files, and one read
 
 ### 6.4 Sidebar
 
-- **Hardware & Memory:** RAM use of the computer (local).
 - **🧹 Clear Server Cache:** frees cached files.
 
 ---
 
 ## 7. Excel → Parquet/HDF5 Converter
 
-The converter is for the **local workstation only**, because it needs native folder dialogs. On Streamlit Cloud, upload the files directly in the analysis pages instead.
-
-1. **Source:** *Entire Folder* (all `.xlsx`/`.xls` files in it) or *Specific File(s)*.
-2. **Format and target folder.**
+1. **Source:** upload one or more `.xlsx`/`.xls` files.
+2. **Format:** Parquet or HDF5.
 3. **🚀 Start Conversion.** A progress bar and a log show each file.
+4. **⬇️ Download Converted Files (ZIP):** one ZIP with all converted files (`converted_files_parquet.zip` or `converted_files_hdf5.zip`).
 
 | Output | Single-sheet Excel | Multi-sheet Excel |
 | :--- | :--- | :--- |
@@ -699,7 +696,7 @@ Each sheet summarises the frames of one recording into one value per measurement
 
 **Deployment**
 
-- The converter and folder selection need a local workstation with a display. Streamlit Cloud has smaller memory and worker limits.
+- Streamlit Cloud (free tier) has about 1 GB of memory: the time-series pages accept at most 20 files, and batch export uses 2 workers. For large studies use the local `prod_pro` version.
 
 ---
 
@@ -723,7 +720,7 @@ Each sheet summarises the frames of one recording into one value per measurement
 | CV warning on negative values | The measurement crosses zero. | Use the SD sheet. |
 | Left/right disagreement warning | The two sides measure different things. | Analyse each side separately. |
 | Time-series page: "column 'Time' was not found" | The file or sheet has no `Time` column. | Use a per-recording filtered file and the Kinematics or Positions sheet. |
-| Converter buttons disabled | No native dialog available (cloud or headless). | Run the app locally. |
+| "Capacity Exceeded!" in a time-series page | More than 20 files uploaded. | Remove files, or use **Remove All Files (Start Over)**. |
 
 **FAQ**
 
