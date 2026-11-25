@@ -72,7 +72,7 @@ st.markdown("""
         4. **Read the warnings.** If your choice does not fit the data (e.g. a t-test on non-normal data, an RM ANOVA
            with missing timepoints, unequal variances with Tukey) a yellow box explains why and suggests an
            alternative. You can still run the test — the decision is yours.
-        5. Results are split into tabs: **Graph**, **Multiple comparisons** (with CSV download), **Omnibus / model**,
+        5. Results are split into tabs: **Graph**, **Multiple comparisons** (with CSV download), **Model effects**,
            **Assumptions**, and **Methods text** (a ready-to-adapt statistics paragraph for your manuscript).
         6. **📦 Batch export** renders a 300-dpi PNG for every selected measurement plus a
            `statistics_summary.csv`, using the same test, post-hoc and correction you selected. Pick your

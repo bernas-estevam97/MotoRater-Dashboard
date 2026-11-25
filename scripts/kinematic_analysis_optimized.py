@@ -878,7 +878,7 @@ def analysis_tab():
             LEVEL_UI[level](msg)
 
     r_plot, r_comp, r_omni, r_assume, r_methods = st.tabs(
-        ["📈 Graph", "🔬 Multiple comparisons", "📋 Omnibus / model", "✅ Assumptions", "📝 Methods text"])
+        ["📈 Graph", "🔬 Multiple comparisons", "📋 Model effects", "✅ Assumptions", "📝 Methods text"])
 
     with r_plot:
         if result['details'].get('log'):
