@@ -481,13 +481,13 @@ Results are shown in five tabs.
 | Summary | Prism-style: `ns`, `*` p < 0.05, `**` p < 0.01, `***` p < 0.001, `****` p < 0.0001. |
 | Significant | Yes when the adjusted p < α. |
 
-**📋 Omnibus / model** — the overall test.
+**📋 Model effects** — the overall tests or model terms for the chosen test.
 
 - RM ANOVA: Group, Time and Time × Group with F, df, p and η²p (≈ 0.01 small, 0.06 medium, ≥ 0.14 large).
 - Mixed-effects and GEE: Wald χ², df and p.
 - Progression model: estimate, SE, z and p for every fixed-effect term, with age terms per week.
 - Single-timepoint multi-group tests: one row per timepoint (F, Welch F or H).
-- A direct two-group test has no omnibus table.
+- A direct two-group test has no table here.
 
 **✅ Assumptions** — normality (test, p, skew, n, CLT override), Levene (worst timepoint), design balance with a list of animals that miss timepoints, and sphericity.
 
